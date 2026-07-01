@@ -1,0 +1,23 @@
+{
+  "name": "ejd-credenciamento",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EJD - credenciamento para o Encontrão 25 Anos",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "cd frontend && npm install && npm run build",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "0.10.4",
+    "@supabase/supabase-js": "2.57.0",
+    "qrcode": "1.5.4"
+  },
+  "overrides": {
+    "@supabase/storage-js": "2.10.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
