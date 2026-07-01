@@ -57,6 +57,8 @@ SUPABASE_SERVICE_ROLE_KEY=
 DATABASE_URL=
 NEON_DATABASE_URL=
 MERCADO_PAGO_ACCESS_TOKEN=
+ADMIN_CPF=
+ADMIN_BIRTH_DATE=
 APP_URL=http://localhost:3000
 PORT=3000
 ```
@@ -122,12 +124,11 @@ Resposta esperada:
 {"ok":true,"storage":"neon"}
 ```
 
-## Usuário Inicial Da Área Exclusiva
+## Área Exclusiva
 
-- CPF: `10101010101`
-- Data de nascimento/senha: `123456789`
+As credenciais administrativas de produção não devem ser publicadas no repositório.
 
-Esse usuário é criado automaticamente se ainda não existir.
+Configure `ADMIN_CPF` e `ADMIN_BIRTH_DATE` somente nas variáveis de ambiente do deploy. O backend usa esses valores para criar ou migrar o usuário administrativo inicial, mas o acesso de produção deve ser tratado como credencial sensível e compartilhado apenas pelos responsáveis do evento.
 
 ## Banco De Dados
 

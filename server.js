@@ -19,6 +19,9 @@ const neonSql = DATABASE_URL ? neon(DATABASE_URL) : null;
 const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 const tables = ["users", "tickets", "settings", "sessions"];
 const tableNames = new Set(tables);
+const LEGACY_ADMIN_CPF = "10101010101";
+const DEFAULT_ADMIN_CPF = String(process.env.ADMIN_CPF || "").replace(/\D/g, "");
+const DEFAULT_ADMIN_BIRTH_DATE = String(process.env.ADMIN_BIRTH_DATE || "").replace(/\D/g, "");
 let seedDone = false;
 let schemaReady = false;
 
@@ -267,17 +270,34 @@ async function ensureSeed() {
     });
   }
 
-  const users = await db.all("users");
-  if (!users.find((user) => user.whatsapp === "10101010101")) {
-    await db.save("users", {
-      id: id("usr"),
-      name: "Área Exclusiva",
-      cpf: "10101010101",
-      whatsapp: "10101010101",
-      birthDate: "123456789",
-      role: "admin",
-      createdAt: now()
-    });
+  if (DEFAULT_ADMIN_CPF) {
+    const users = await db.all("users");
+    const defaultAdmin = users.find((user) => user.cpf === DEFAULT_ADMIN_CPF || user.whatsapp === DEFAULT_ADMIN_CPF);
+    const legacyAdmin = users.find((user) => user.role === "admin" && (user.cpf === LEGACY_ADMIN_CPF || user.whatsapp === LEGACY_ADMIN_CPF));
+
+    if (legacyAdmin && !defaultAdmin) {
+      legacyAdmin.cpf = DEFAULT_ADMIN_CPF;
+      legacyAdmin.whatsapp = DEFAULT_ADMIN_CPF;
+      if (DEFAULT_ADMIN_BIRTH_DATE) legacyAdmin.birthDate = DEFAULT_ADMIN_BIRTH_DATE;
+      legacyAdmin.updatedAt = now();
+      await db.save("users", legacyAdmin);
+    } else if (legacyAdmin && defaultAdmin && legacyAdmin.id !== defaultAdmin.id) {
+      legacyAdmin.role = "usuarios";
+      legacyAdmin.cpf = `disabled-${legacyAdmin.id}`;
+      legacyAdmin.whatsapp = `disabled-${legacyAdmin.id}`;
+      legacyAdmin.updatedAt = now();
+      await db.save("users", legacyAdmin);
+    } else if (!defaultAdmin && DEFAULT_ADMIN_BIRTH_DATE) {
+      await db.save("users", {
+        id: id("usr"),
+        name: "Area Exclusiva",
+        cpf: DEFAULT_ADMIN_CPF,
+        whatsapp: DEFAULT_ADMIN_CPF,
+        birthDate: DEFAULT_ADMIN_BIRTH_DATE,
+        role: "admin",
+        createdAt: now()
+      });
+    }
   }
   seedDone = true;
 }
