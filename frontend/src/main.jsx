@@ -543,7 +543,6 @@ function MyTickets({ tickets }) {
       <h2>Meus ingressos</h2>
       <div className="ticket-list">
         {confirmed.map((ticket) => {
-          const text = encodeURIComponent(`Meu ingresso do Encontrão 25 Anos: ${ticket.code}`);
           return (
             <article className="ticket" key={ticket.id} role="button" tabIndex="0" onClick={() => setSelectedTicket(ticket)} onKeyDown={(event) => { if (event.key === "Enter") setSelectedTicket(ticket); }}>
               <div>
@@ -560,7 +559,6 @@ function MyTickets({ tickets }) {
                 </div>
               )}
               <div className="ticket-actions">
-                <a className="secondary" href={`https://wa.me/?text=${text}`} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>WhatsApp</a>
                 <button className="secondary" onClick={(event) => { event.stopPropagation(); downloadTicket(ticket); }}>Baixar</button>
               </div>
             </article>

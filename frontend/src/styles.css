@@ -556,7 +556,7 @@ textarea {
 
 .ticket-actions {
   display: grid;
-  grid-template-columns: 1fr 92px;
+  grid-template-columns: 1fr;
   gap: 8px;
 }
 
