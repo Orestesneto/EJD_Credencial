@@ -1,0 +1,12 @@
+{
+  "appId": "br.com.ejdcredenciamento.app",
+  "appName": "EJD Credenciamento",
+  "webDir": "www",
+  "server": {
+    "url": "https://ejd-credenciamento.vercel.app",
+    "cleartext": false
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

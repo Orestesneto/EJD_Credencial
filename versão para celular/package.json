@@ -1,0 +1,19 @@
+{
+  "name": "ejd-credenciamento-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Versao Android do EJD Credenciamento",
+  "scripts": {
+    "sync": "cap sync android",
+    "open": "cap open android",
+    "run:android": "cap run android",
+    "build:android": "cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "6.1.2",
+    "@capacitor/core": "6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "6.1.2"
+  }
+}

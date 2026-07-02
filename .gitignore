@@ -1,6 +1,9 @@
 node_modules/
 frontend/node_modules/
 frontend/dist/
+versão para celular/node_modules/
+versão para celular/android/.gradle/
+versão para celular/android/app/build/
 data/
 .env
 .env.*

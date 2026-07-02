@@ -49,6 +49,25 @@ Para desenvolvimento simples do backend, também é possível usar:
 npm run dev
 ```
 
+## Versao Android
+
+A pasta `versão para celular/` contem um app Android criado com Capacitor. Ele abre o deploy de producao do sistema dentro de um aplicativo nativo.
+
+Para gerar um APK debug:
+
+```bash
+cd "versão para celular"
+npm install
+npm run sync
+npm run build:android
+```
+
+O APK fica em:
+
+```text
+versão para celular/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
 ## Variáveis De Ambiente
 
 ```bash
