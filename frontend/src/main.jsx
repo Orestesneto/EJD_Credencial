@@ -411,6 +411,11 @@ function BuyTicket({ refresh }) {
     api("/api/config").then(setConfig).catch((error) => setNotice({ type: "error", text: error.message }));
   }, []);
 
+  function updateQuantity(value) {
+    const next = Math.min(Math.max(Number.parseInt(value, 10) || 1, 1), 20);
+    setQuantity(next);
+  }
+
   async function checkout() {
     setLoading(true);
     setNotice(null);
@@ -461,7 +466,11 @@ function BuyTicket({ refresh }) {
           </div>
           <label className="quantity-field">
             Quantidade
-            <input type="number" min="1" max="20" value={quantity} onChange={(e) => setQuantity(Math.min(Math.max(Number(e.target.value) || 1, 1), 20))} />
+            <div className="quantity-control">
+              <button type="button" className="quantity-button" onClick={() => updateQuantity(quantity - 1)} disabled={quantity <= 1}>-</button>
+              <input inputMode="numeric" pattern="[0-9]*" value={quantity} onChange={(e) => updateQuantity(e.target.value)} aria-label="Quantidade de ingressos" />
+              <button type="button" className="quantity-button" onClick={() => updateQuantity(quantity + 1)} disabled={quantity >= 20}>+</button>
+            </div>
           </label>
           <fieldset className="payment-options">
             <legend>Pagamento</legend>
