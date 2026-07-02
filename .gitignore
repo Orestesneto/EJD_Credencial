@@ -10,3 +10,5 @@ data/
 !.env.example
 .vercel/
 *.log
+.idea/
+**/.idea/
