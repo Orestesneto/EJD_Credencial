@@ -5,6 +5,11 @@ import "./styles.css";
 
 const tokenKey = "ejd_token";
 const confirmedPaymentSeenKey = "ejd_confirmed_payment_seen";
+const saleLotPricePresets = {
+  relampago: { ticketPrice: "60", socialTicketPrice: "40" },
+  lote2: { ticketPrice: "80", socialTicketPrice: "50" },
+  lote3: { ticketPrice: "100", socialTicketPrice: "60" }
+};
 const roles = {
   usuarios: "usuarios",
   participant: "usuarios",
@@ -396,13 +401,27 @@ async function downloadTicket(ticket) {
 
 function BuyTicket({ refresh }) {
   const [config, setConfig] = useState(null);
-  const [quantity, setQuantity] = useState(1);
+  const [ticketQuantities, setTicketQuantities] = useState({ inteiro: 1, meia: 0, social: 0 });
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [pixModal, setPixModal] = useState(null);
+  const [ticketLotsModal, setTicketLotsModal] = useState(true);
+  const [socialTicketModal, setSocialTicketModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState(null);
   const unitPrice = Number(config?.settings?.ticketPrice || 0);
-  const subtotal = unitPrice * quantity;
+  const socialUnitPrice = Number(config?.settings?.socialTicketPrice ?? unitPrice);
+  const ticketTypeOptions = [
+    { value: "inteiro", label: "Inteiro", discount: 0 },
+    { value: "meia", label: "Meia", discount: 0.5 },
+    { value: "social", label: "Social" }
+  ];
+  const ticketTypePrices = {
+    inteiro: unitPrice,
+    meia: unitPrice * 0.5,
+    social: socialUnitPrice
+  };
+  const quantity = Object.values(ticketQuantities).reduce((sum, value) => sum + value, 0);
+  const subtotal = ticketTypeOptions.reduce((sum, option) => sum + ticketTypePrices[option.value] * ticketQuantities[option.value], 0);
   const serviceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
   const serviceFee = subtotal * serviceFeeRate;
   const total = subtotal + serviceFee;
@@ -411,9 +430,28 @@ function BuyTicket({ refresh }) {
     api("/api/config").then(setConfig).catch((error) => setNotice({ type: "error", text: error.message }));
   }, []);
 
-  function updateQuantity(value) {
-    const next = Math.min(Math.max(Number.parseInt(value, 10) || 1, 1), 20);
-    setQuantity(next);
+  function updateTicketQuantity(ticketType, value) {
+    const parsed = Math.max(Number.parseInt(value, 10) || 0, 0);
+    const otherQuantity = Object.entries(ticketQuantities).reduce((sum, [type, amount]) => type === ticketType ? sum : sum + amount, 0);
+    const next = Math.min(parsed, Math.max(20 - otherQuantity, 0));
+    setTicketQuantities({ ...ticketQuantities, [ticketType]: next });
+  }
+
+  function handlePayClick() {
+    if (quantity <= 0) {
+      setNotice({ type: "error", text: "Selecione pelo menos 1 ingresso." });
+      return;
+    }
+    if (ticketQuantities.social > 0) {
+      setSocialTicketModal(true);
+      return;
+    }
+    checkout();
+  }
+
+  function confirmSocialTicket() {
+    setSocialTicketModal(false);
+    checkout();
   }
 
   async function checkout() {
@@ -422,7 +460,7 @@ function BuyTicket({ refresh }) {
     try {
       const data = await api("/api/tickets/checkout", {
         method: "POST",
-        body: JSON.stringify({ quantity, paymentMethod })
+        body: JSON.stringify({ items: ticketQuantities, paymentMethod })
       });
       await refresh();
       if (data.pix?.qrCode) {
@@ -448,8 +486,8 @@ function BuyTicket({ refresh }) {
         <div className="checkout-info">
           <div className="price-summary">
             <div>
-              <span>Ingresso</span>
-              <strong>R$ {unitPrice.toFixed(2).replace(".", ",")}</strong>
+              <span>Ingressos</span>
+              <strong>{quantity}</strong>
             </div>
             <div>
               <span>Subtotal</span>
@@ -464,14 +502,22 @@ function BuyTicket({ refresh }) {
               <strong>R$ {total.toFixed(2).replace(".", ",")}</strong>
             </div>
           </div>
-          <label className="quantity-field">
-            Quantidade
-            <div className="quantity-control">
-              <button type="button" className="quantity-button" onClick={() => updateQuantity(quantity - 1)} disabled={quantity <= 1}>-</button>
-              <input inputMode="numeric" pattern="[0-9]*" value={quantity} onChange={(e) => updateQuantity(e.target.value)} aria-label="Quantidade de ingressos" />
-              <button type="button" className="quantity-button" onClick={() => updateQuantity(quantity + 1)} disabled={quantity >= 20}>+</button>
-            </div>
-          </label>
+          <fieldset className="ticket-type-options">
+            <legend>Tipo de ingresso</legend>
+            {ticketTypeOptions.map((option) => (
+              <div className="ticket-type-row" key={option.value}>
+                <div>
+                  <strong>{option.label}</strong>
+                  <span>R$ {ticketTypePrices[option.value].toFixed(2).replace(".", ",")}</span>
+                </div>
+                <div className="quantity-control compact">
+                  <button type="button" className="quantity-button" onClick={() => updateTicketQuantity(option.value, ticketQuantities[option.value] - 1)} disabled={ticketQuantities[option.value] <= 0}>-</button>
+                  <input inputMode="numeric" pattern="[0-9]*" value={ticketQuantities[option.value]} onChange={(e) => updateTicketQuantity(option.value, e.target.value)} aria-label={`Quantidade de ingressos ${option.label}`} />
+                  <button type="button" className="quantity-button" onClick={() => updateTicketQuantity(option.value, ticketQuantities[option.value] + 1)} disabled={quantity >= 20}>+</button>
+                </div>
+              </div>
+            ))}
+          </fieldset>
           <fieldset className="payment-options">
             <legend>Pagamento</legend>
             <label>
@@ -484,7 +530,7 @@ function BuyTicket({ refresh }) {
             </label>
           </fieldset>
         </div>
-        <button className="primary" disabled={loading} onClick={checkout}>
+        <button className="primary" disabled={loading} onClick={handlePayClick}>
           {loading ? "Abrindo pagamento..." : "Pagar"}
         </button>
       </div>
@@ -492,8 +538,95 @@ function BuyTicket({ refresh }) {
         <p>* Pix: taxa de serviço de 1%.</p>
         <p>** Cartão de crédito: taxa de serviço de 8%.</p>
       </div>
+      {ticketLotsModal && <TicketLotsModal currentSaleLot={config?.settings?.currentSaleLot} onClose={() => setTicketLotsModal(false)} />}
+      {socialTicketModal && <SocialTicketModal onConfirm={confirmSocialTicket} onClose={() => setSocialTicketModal(false)} />}
       {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} />}
     </section>
+  );
+}
+
+function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
+  const lots = [
+    { id: "relampago",
+      name: "1° Lote Relâmpago",
+      prices: [
+        ["Inteira", "60,00"],
+        ["Meia", "30,00"],
+        ["Social", "40,00"]
+      ]
+    },
+    { id: "lote2",
+      name: "2° lote",
+      prices: [
+        ["Inteira", "80,00"],
+        ["Meia", "40,00"],
+        ["Social", "50,00"]
+      ]
+    },
+    { id: "lote3",
+      name: "3° lote",
+      prices: [
+        ["Inteira", "100,00"],
+        ["Meia", "50,00"],
+        ["Social", "60,00"]
+      ]
+    }
+  ];
+  const currentLotIndex = Math.max(lots.findIndex((lot) => lot.id === currentSaleLot), 0);
+
+  function lotStatus(index) {
+    if (index < currentLotIndex) return "Encerrado";
+    if (index > currentLotIndex) return "Não iniciado";
+    return "Em venda";
+  }
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal lots-modal">
+        <div className="modal-head">
+          <h3>Lotes de ingressos</h3>
+          <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        <div className="lot-list">
+          {lots.map((lot, index) => (
+            <section className="lot-card" key={lot.name}>
+              <div className="lot-card-head">
+                <h4>{lot.name}</h4>
+                <strong className={`lot-status ${index === currentLotIndex ? "active" : ""}`}>{lotStatus(index)}</strong>
+              </div>
+              <div className="lot-prices">
+                {lot.prices.map(([label, price]) => (
+                  <div key={label}>
+                    <span>{label}</span>
+                    <strong>R$ {price}</strong>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+        <div className="modal-actions">
+          <button className="primary" onClick={onClose}>Continuar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SocialTicketModal({ onConfirm, onClose }) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal confirm-modal">
+        <div className="modal-head">
+          <h3>Ingresso Social</h3>
+          <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        <p>Ingressos do tipo Social exigem a doação de 1 kg de alimento não perecível, que deverá ser entregue na entrada do evento.</p>
+        <div className="modal-actions">
+          <button className="primary" onClick={onConfirm}>OK</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -708,6 +841,7 @@ function AdminPanel({ refresh }) {
         body: JSON.stringify(settings)
       });
       setSettings(data.settings);
+      await refresh();
       setNotice({ type: "success", text: "Ingresso atualizado." });
     } catch (error) {
       setNotice({ type: "error", text: error.message });
@@ -737,6 +871,14 @@ function AdminPanel({ refresh }) {
     }
   }
 
+  function updateSaleLot(currentSaleLot) {
+    setSettings({
+      ...settings,
+      currentSaleLot,
+      ...saleLotPricePresets[currentSaleLot]
+    });
+  }
+
   return (
     <>
       <section className="panel">
@@ -748,9 +890,32 @@ function AdminPanel({ refresh }) {
               Valor
               <input type="number" min="0" step="0.01" value={settings.ticketPrice} onChange={(e) => setSettings({ ...settings, ticketPrice: e.target.value })} />
             </label>
+            <label>
+              Valor do ingresso social
+              <input type="number" min="0" step="0.01" value={settings.socialTicketPrice ?? settings.ticketPrice ?? ""} onChange={(e) => setSettings({ ...settings, socialTicketPrice: e.target.value })} />
+            </label>
+            <fieldset className="sale-lot-options">
+              <legend>Lote atual</legend>
+              <label>
+                <input type="radio" name="currentSaleLot" value="relampago" checked={(settings.currentSaleLot || "relampago") === "relampago"} onChange={(e) => updateSaleLot(e.target.value)} />
+                Lote Relâmpago
+              </label>
+              <label>
+                <input type="radio" name="currentSaleLot" value="lote2" checked={settings.currentSaleLot === "lote2"} onChange={(e) => updateSaleLot(e.target.value)} />
+                2 Lote
+              </label>
+              <label>
+                <input type="radio" name="currentSaleLot" value="lote3" checked={settings.currentSaleLot === "lote3"} onChange={(e) => updateSaleLot(e.target.value)} />
+                3 Lote
+              </label>
+            </fieldset>
             <label className="toggle">
               <input type="checkbox" checked={settings.registrationOpen} onChange={(e) => setSettings({ ...settings, registrationOpen: e.target.checked })} />
               Cadastro aberto
+            </label>
+            <label className="toggle">
+              <input type="checkbox" checked={Boolean(settings.ticketSalesClosed)} onChange={(e) => setSettings({ ...settings, ticketSalesClosed: e.target.checked })} />
+              Fechado para a venda de ingressos
             </label>
             <button className="primary">Salvar</button>
           </form>
@@ -823,6 +988,7 @@ function AdminPanel({ refresh }) {
 function App() {
   const [user, setUser] = useState(null);
   const [tickets, setTickets] = useState([]);
+  const [config, setConfig] = useState(null);
   const [active, setActive] = useState("profile");
   const [paymentConfirmedModal, setPaymentConfirmedModal] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -842,9 +1008,13 @@ function App() {
   }
 
   async function refresh() {
-    const data = await api("/api/me");
+    const [data, configData] = await Promise.all([
+      api("/api/me"),
+      api("/api/config")
+    ]);
     setUser(data.user);
     setTickets(data.tickets || []);
+    setConfig(configData);
     detectConfirmedPayment(data.tickets || []);
     return data;
   }
@@ -876,12 +1046,12 @@ function App() {
   const tabs = useMemo(() => {
     if (!user) return [];
     const items = [{ id: "profile", label: "Meu perfil" }];
-    if (["usuarios", "participant"].includes(user.role)) items.push({ id: "buy", label: "Comprar ingressos" });
+    if (["usuarios", "participant"].includes(user.role) && !config?.settings?.ticketSalesClosed) items.push({ id: "buy", label: "Comprar ingressos" });
     if (tickets.some(isTicketPaid)) items.push({ id: "tickets", label: "Meus ingressos" });
     if (["checkin", "admin"].includes(user.role)) items.push({ id: "checkin", label: "Acessar painel de check-in" });
     if (user.role === "admin") items.push({ id: "admin", label: "Área exclusiva" });
     return items;
-  }, [user, tickets]);
+  }, [user, tickets, config]);
 
   useEffect(() => {
     if (tabs.length && !tabs.find((tab) => tab.id === active)) setActive(tabs[0].id);

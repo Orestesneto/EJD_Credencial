@@ -69,6 +69,12 @@ function cleanDigits(value) {
   return String(value || "").replace(/\D/g, "");
 }
 
+function numberOrDefault(value, fallback = 0) {
+  if (value === "" || value === null || value === undefined) return Number(fallback || 0);
+  const number = Number(value);
+  return Number.isFinite(number) ? number : Number(fallback || 0);
+}
+
 function createTicketCode(usedCodes = new Set()) {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@*+%$";
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -102,6 +108,12 @@ function hash(value) {
 
 const mercadoPagoWaitingStatuses = new Set(["pending", "in_process", "authorized"]);
 const mercadoPagoFinalUnpaidStatuses = new Set(["rejected", "cancelled", "refunded", "charged_back", "in_mediation"]);
+const ticketTypeDiscounts = {
+  inteiro: 0,
+  meia: 0.5
+};
+const ticketTypes = new Set(["inteiro", "meia", "social"]);
+const saleLots = new Set(["relampago", "lote2", "lote3"]);
 
 function isMercadoPagoWaiting(ticket) {
   const status = ticket.mercadoPagoStatus;
@@ -265,7 +277,10 @@ async function ensureSeed() {
       eventName: "Encontrão 25 Anos",
       city: "Campina Grande - PB",
       registrationOpen: true,
-      ticketPrice: 50,
+      ticketSalesClosed: false,
+      ticketPrice: 60,
+      socialTicketPrice: 40,
+      currentSaleLot: "relampago",
       updatedAt: now()
     });
   }
@@ -478,7 +493,15 @@ async function api(req, res, pathname) {
 
   if (pathname === "/api/config" && req.method === "GET") {
     const settings = (await db.all("settings")).find((item) => item.id === "event");
-    return send(res, 200, { settings, paymentConfigured: Boolean(MP_TOKEN) });
+    return send(res, 200, {
+      settings: {
+        ...settings,
+        socialTicketPrice: numberOrDefault(settings?.socialTicketPrice, settings?.ticketPrice),
+        currentSaleLot: saleLots.has(settings?.currentSaleLot) ? settings.currentSaleLot : "relampago",
+        ticketSalesClosed: Boolean(settings?.ticketSalesClosed)
+      },
+      paymentConfigured: Boolean(MP_TOKEN)
+    });
   }
 
   if (pathname === "/api/register" && req.method === "POST") {
@@ -535,17 +558,33 @@ async function api(req, res, pathname) {
   if (pathname === "/api/tickets/checkout" && req.method === "POST") {
     if (!auth) return send(res, 401, { message: "Sessão inválida." });
     const settings = (await db.all("settings")).find((item) => item.id === "event");
-    const quantity = Math.min(Math.max(Number.parseInt(body.quantity, 10) || 1, 1), 20);
+    if (settings.ticketSalesClosed) return send(res, 403, { message: "Venda de ingressos fechada." });
     const paymentMethod = body.paymentMethod === "credit_card" ? "credit_card" : "pix";
     const unitPrice = Number(settings.ticketPrice || 0);
-    const subtotal = unitPrice * quantity;
+    const ticketTypePrices = {
+      inteiro: unitPrice,
+      meia: Number((unitPrice * ticketTypeDiscounts.meia).toFixed(2)),
+      social: numberOrDefault(settings.socialTicketPrice, unitPrice)
+    };
+    const requestedItems = body.items && typeof body.items === "object"
+      ? body.items
+      : { [ticketTypes.has(body.ticketType) ? body.ticketType : "inteiro"]: body.quantity };
+    const ticketItems = [...ticketTypes].map((ticketType) => ({
+      ticketType,
+      quantity: Math.max(Number.parseInt(requestedItems[ticketType], 10) || 0, 0),
+      unitPrice: ticketTypePrices[ticketType]
+    })).filter((item) => item.quantity > 0);
+    const quantity = ticketItems.reduce((sum, item) => sum + item.quantity, 0);
+    if (quantity < 1) return send(res, 400, { message: "Selecione pelo menos 1 ingresso." });
+    if (quantity > 20) return send(res, 400, { message: "Selecione no máximo 20 ingressos por compra." });
+    const subtotal = Number(ticketItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0).toFixed(2));
     const serviceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
     const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
     const total = Number((subtotal + serviceFee).toFixed(2));
     const paymentUnitPrice = Number((total / quantity).toFixed(2));
     const orderId = id("ord");
     const usedCodes = new Set((await db.all("tickets")).map((ticket) => ticket.code));
-    const tickets = Array.from({ length: quantity }, () => ({
+    const tickets = ticketItems.flatMap((item) => Array.from({ length: item.quantity }, () => ({
       id: id("tkt"),
       orderId,
       userId: auth.user.id,
@@ -553,15 +592,17 @@ async function api(req, res, pathname) {
       participantWhatsapp: auth.user.whatsapp,
       status: "pending",
       mercadoPagoStatus: "pending",
-      price: unitPrice,
-      serviceFee: Number((serviceFee / quantity).toFixed(2)),
+      ticketType: item.ticketType,
+      originalPrice: unitPrice,
+      price: item.unitPrice,
+      serviceFee: Number((item.unitPrice * serviceFeeRate).toFixed(2)),
       paymentMethod,
       code: createTicketCode(usedCodes),
       checkinAt: null,
       paymentId: null,
       createdAt: now(),
       updatedAt: now()
-    }));
+    })));
     let pix = null;
     let preference = null;
     try {
@@ -591,6 +632,7 @@ async function api(req, res, pathname) {
       subtotal,
       serviceFee,
       total,
+      items: ticketItems,
       paymentMethod,
       pix,
       paymentUrl: tickets[0]?.paymentUrl,
@@ -638,7 +680,10 @@ async function api(req, res, pathname) {
     const current = (await db.all("settings")).find((item) => item.id === "event");
     const settings = {
       ...current,
-      ticketPrice: Number(body.ticketPrice || current.ticketPrice || 0),
+      ticketPrice: numberOrDefault(body.ticketPrice, current.ticketPrice),
+      socialTicketPrice: numberOrDefault(body.socialTicketPrice, current.socialTicketPrice ?? current.ticketPrice),
+      currentSaleLot: saleLots.has(body.currentSaleLot) ? body.currentSaleLot : current.currentSaleLot || "relampago",
+      ticketSalesClosed: Boolean(body.ticketSalesClosed),
       registrationOpen: Boolean(body.registrationOpen),
       updatedAt: now()
     };

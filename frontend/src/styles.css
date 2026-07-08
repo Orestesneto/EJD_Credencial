@@ -298,7 +298,7 @@ select:focus {
 
 .checkout-info {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) 140px minmax(250px, 0.8fr);
+  grid-template-columns: minmax(240px, 0.9fr) minmax(280px, 1fr) minmax(230px, 0.75fr);
   align-items: stretch;
   gap: 14px;
   flex: 1;
@@ -371,10 +371,10 @@ select:focus {
   font-size: 1.45rem;
 }
 
+.ticket-type-options,
 .payment-options {
   display: grid;
   gap: 8px;
-  min-width: 230px;
   border: 1px solid var(--line);
   border-radius: 8px;
   margin: 0;
@@ -382,6 +382,7 @@ select:focus {
   background: #fbfdff;
 }
 
+.ticket-type-options legend,
 .payment-options legend {
   padding: 0 4px;
   color: var(--muted);
@@ -389,6 +390,7 @@ select:focus {
   font-weight: 700;
 }
 
+.ticket-type-options label,
 .payment-options label {
   display: flex;
   align-items: center;
@@ -396,6 +398,47 @@ select:focus {
   color: var(--navy);
   font-weight: 700;
   white-space: nowrap;
+}
+
+.ticket-type-options label span {
+  color: var(--navy);
+  font-size: 1rem;
+}
+
+.ticket-type-row {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.ticket-type-row > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.ticket-type-row strong {
+  color: var(--navy);
+}
+
+.ticket-type-row span {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.quantity-control.compact {
+  grid-template-columns: 36px 54px 36px;
+  gap: 6px;
+}
+
+.quantity-control.compact .quantity-button,
+.quantity-control.compact input {
+  min-height: 38px;
+}
+
+.quantity-control.compact .quantity-button {
+  width: 36px;
 }
 
 .payment-options input {
@@ -462,6 +505,70 @@ select:focus {
   color: var(--text);
   font-size: 1rem;
   line-height: 1.45;
+}
+
+.lots-modal {
+  width: min(100%, 560px);
+  gap: 16px;
+}
+
+.lot-list {
+  display: grid;
+  gap: 12px;
+}
+
+.lot-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #edf2f7;
+  border-radius: 6px;
+  padding: 18px;
+  background: #f8fafc;
+}
+
+.lot-card h4 {
+  margin: 0;
+  color: var(--emerald);
+  font-size: 1.05rem;
+}
+
+.lot-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.lot-status {
+  color: var(--navy);
+  font-size: 0.98rem;
+  white-space: nowrap;
+}
+
+.lot-status.active {
+  color: var(--emerald-dark);
+}
+
+.lot-prices {
+  display: grid;
+  gap: 8px;
+}
+
+.lot-prices div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.lot-prices span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.lot-prices strong {
+  color: var(--navy);
+  font-size: 1.05rem;
 }
 
 .icon-button {
@@ -666,8 +773,45 @@ textarea {
 }
 
 .admin-form {
-  grid-template-columns: 180px 1fr auto;
+  grid-template-columns: 180px 220px minmax(260px, 1fr) auto;
   align-items: end;
+}
+
+.sale-lot-options {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.sale-lot-options legend {
+  width: 100%;
+  margin-bottom: 6px;
+  color: var(--navy);
+  font-weight: 700;
+}
+
+.sale-lot-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--navy);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sale-lot-options input {
+  width: 18px;
+  min-height: 18px;
+  accent-color: var(--emerald);
+}
+
+.admin-form .toggle {
+  min-height: 44px;
+  white-space: nowrap;
 }
 
 .table {
