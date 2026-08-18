@@ -6,7 +6,7 @@ Produção: https://ejd-credenciamento.vercel.app
 
 ## Funcionalidades
 
-- Cadastro e login de participantes por CPF, WhatsApp e data de nascimento.
+- Cadastro e login de participantes por e-mail e data de nascimento.
 - Compra de ingressos com Pix ou cartão de crédito via Mercado Pago.
 - Geração de QR Code para ingressos pagos.
 - Painel de check-in com validação por QR Code, código ou telefone.
@@ -76,7 +76,7 @@ SUPABASE_SERVICE_ROLE_KEY=
 DATABASE_URL=
 NEON_DATABASE_URL=
 MERCADO_PAGO_ACCESS_TOKEN=
-ADMIN_CPF=
+ADMIN_EMAIL=
 ADMIN_BIRTH_DATE=
 APP_URL=http://localhost:3000
 PORT=3000
@@ -147,7 +147,7 @@ Resposta esperada:
 
 As credenciais administrativas de produção não devem ser publicadas no repositório.
 
-Configure `ADMIN_CPF` e `ADMIN_BIRTH_DATE` somente nas variáveis de ambiente do deploy. O backend usa esses valores para criar ou migrar o usuário administrativo inicial, mas o acesso de produção deve ser tratado como credencial sensível e compartilhado apenas pelos responsáveis do evento.
+Configure `ADMIN_EMAIL` e `ADMIN_BIRTH_DATE` somente nas variáveis de ambiente do deploy. O backend usa esses valores para criar ou migrar o usuário administrativo inicial, mas o acesso de produção deve ser tratado como credencial sensível e compartilhado apenas pelos responsáveis do evento.
 
 ## Banco De Dados
 

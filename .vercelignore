@@ -1,4 +1,7 @@
 versão para celular/
+*celular/
+**/node_modules/
+**/.gradle/
 node_modules/
 frontend/node_modules/
 frontend/dist/

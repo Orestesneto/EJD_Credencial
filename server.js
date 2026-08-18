@@ -19,8 +19,7 @@ const neonSql = DATABASE_URL ? neon(DATABASE_URL) : null;
 const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 const tables = ["users", "tickets", "settings", "sessions"];
 const tableNames = new Set(tables);
-const LEGACY_ADMIN_CPF = "10101010101";
-const DEFAULT_ADMIN_CPF = String(process.env.ADMIN_CPF || "").replace(/\D/g, "");
+const DEFAULT_ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL);
 const DEFAULT_ADMIN_BIRTH_DATE = String(process.env.ADMIN_BIRTH_DATE || "").replace(/\D/g, "");
 let seedDone = false;
 let schemaReady = false;
@@ -69,6 +68,14 @@ function cleanDigits(value) {
   return String(value || "").replace(/\D/g, "");
 }
 
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value));
+}
+
 function numberOrDefault(value, fallback = 0) {
   if (value === "" || value === null || value === undefined) return Number(fallback || 0);
   const number = Number(value);
@@ -88,18 +95,6 @@ function createTicketCode(usedCodes = new Set()) {
     }
   }
   throw new Error("Não foi possível gerar um código único para o ingresso.");
-}
-
-function isValidCpf(value) {
-  const cpf = cleanDigits(value);
-  if (cpf.length !== 11 || /^(\d)\1+$/.test(cpf)) return false;
-  const calcDigit = (size) => {
-    let sum = 0;
-    for (let i = 0; i < size; i += 1) sum += Number(cpf[i]) * (size + 1 - i);
-    const rest = (sum * 10) % 11;
-    return rest === 10 ? 0 : rest;
-  };
-  return calcDigit(9) === Number(cpf[9]) && calcDigit(10) === Number(cpf[10]);
 }
 
 function hash(value) {
@@ -285,29 +280,32 @@ async function ensureSeed() {
     });
   }
 
-  if (DEFAULT_ADMIN_CPF) {
+  if (DEFAULT_ADMIN_EMAIL) {
     const users = await db.all("users");
-    const defaultAdmin = users.find((user) => user.cpf === DEFAULT_ADMIN_CPF || user.whatsapp === DEFAULT_ADMIN_CPF);
-    const legacyAdmin = users.find((user) => user.role === "admin" && (user.cpf === LEGACY_ADMIN_CPF || user.whatsapp === LEGACY_ADMIN_CPF));
+    const defaultAdmin = users.find((user) => normalizeEmail(user.email) === DEFAULT_ADMIN_EMAIL);
+    const legacyAdmin = users.find((user) => user.role === "admin" && !user.email);
+
+    if (defaultAdmin && defaultAdmin.role !== "admin") {
+      defaultAdmin.role = "admin";
+      defaultAdmin.updatedAt = now();
+      await db.save("users", defaultAdmin);
+    }
 
     if (legacyAdmin && !defaultAdmin) {
-      legacyAdmin.cpf = DEFAULT_ADMIN_CPF;
-      legacyAdmin.whatsapp = DEFAULT_ADMIN_CPF;
+      legacyAdmin.email = DEFAULT_ADMIN_EMAIL;
       if (DEFAULT_ADMIN_BIRTH_DATE) legacyAdmin.birthDate = DEFAULT_ADMIN_BIRTH_DATE;
       legacyAdmin.updatedAt = now();
       await db.save("users", legacyAdmin);
     } else if (legacyAdmin && defaultAdmin && legacyAdmin.id !== defaultAdmin.id) {
       legacyAdmin.role = "usuarios";
-      legacyAdmin.cpf = `disabled-${legacyAdmin.id}`;
-      legacyAdmin.whatsapp = `disabled-${legacyAdmin.id}`;
       legacyAdmin.updatedAt = now();
       await db.save("users", legacyAdmin);
     } else if (!defaultAdmin && DEFAULT_ADMIN_BIRTH_DATE) {
       await db.save("users", {
         id: id("usr"),
         name: "Area Exclusiva",
-        cpf: DEFAULT_ADMIN_CPF,
-        whatsapp: DEFAULT_ADMIN_CPF,
+        email: DEFAULT_ADMIN_EMAIL,
+        whatsapp: "",
         birthDate: DEFAULT_ADMIN_BIRTH_DATE,
         role: "admin",
         createdAt: now()
@@ -347,7 +345,7 @@ function publicUser(user) {
   return {
     id: user.id,
     name: user.name,
-    cpf: user.cpf,
+    email: user.email,
     whatsapp: user.whatsapp,
     birthDate: user.birthDate,
     role: user.role || "usuarios"
@@ -403,9 +401,7 @@ function mercadoPagoErrorMessage(data, fallback) {
 }
 
 function mercadoPagoPayerEmail(user) {
-  const digits = cleanDigits(user?.cpf || user?.id);
-  const suffix = digits || cleanDigits(user?.whatsapp) || String(user?.id || "comprador").replace(/[^a-z0-9]/gi, "");
-  return `comprador+${suffix}@ejd25anos.com.br`;
+  return normalizeEmail(user?.email);
 }
 
 async function createMercadoPagoPreference(user, orderId, quantity, unitPrice) {
@@ -429,6 +425,7 @@ async function createMercadoPagoPreference(user, orderId, quantity, unitPrice) {
       ],
       payer: {
         name: user.name,
+        email: mercadoPagoPayerEmail(user),
         phone: { number: user.whatsapp }
       },
       payment_methods: {
@@ -466,11 +463,7 @@ async function createMercadoPagoPixPayment(user, orderId, quantity, unitPrice) {
       notification_url: `${APP_URL}/webhook/mercadopago`,
       payer: {
         email: mercadoPagoPayerEmail(user),
-        first_name: user.name,
-        identification: {
-          type: "CPF",
-          number: user.cpf
-        }
+        first_name: user.name
       }
     })
   });
@@ -508,21 +501,20 @@ async function api(req, res, pathname) {
     const settings = (await db.all("settings")).find((item) => item.id === "event");
     if (!settings.registrationOpen) return send(res, 403, { message: "Cadastro fechado." });
     const name = String(body.name || "").trim();
-    const cpf = cleanDigits(body.cpf);
+    const email = normalizeEmail(body.email);
     const whatsapp = cleanDigits(body.whatsapp);
     const birthDate = cleanDigits(body.birthDate);
-    if (!name || cpf.length !== 11 || whatsapp.length !== 11 || !birthDate) {
-      return send(res, 400, { message: "Preencha nome, CPF, WhatsApp e nascimento corretamente." });
+    if (!name || !isValidEmail(email) || whatsapp.length !== 11 || birthDate.length !== 8) {
+      return send(res, 400, { message: "Preencha nome, e-mail, WhatsApp e nascimento corretamente." });
     }
-    if (!isValidCpf(cpf)) return send(res, 400, { message: "O CPF informado é inválido." });
     const users = await db.all("users");
-    if (users.find((user) => user.cpf === cpf)) {
-      return send(res, 409, { message: "Ja existe uma conta cadastrada com esse CPF." });
+    if (users.find((user) => normalizeEmail(user.email) === email)) {
+      return send(res, 409, { message: "Já existe uma conta cadastrada com esse e-mail." });
     }
     const user = {
       id: id("usr"),
       name,
-      cpf,
+      email,
       whatsapp,
       birthDate,
       role: "usuarios",
@@ -534,10 +526,13 @@ async function api(req, res, pathname) {
   }
 
   if (pathname === "/api/login" && req.method === "POST") {
-    const cpf = cleanDigits(body.cpf || body.whatsapp);
+    const email = normalizeEmail(body.email);
     const birthDate = cleanDigits(body.birthDate);
+    if (!isValidEmail(email) || birthDate.length !== 8) {
+      return send(res, 400, { message: "Informe o e-mail e a data de nascimento corretamente." });
+    }
     const users = await db.all("users");
-    const user = users.find((item) => item.cpf === cpf && item.birthDate === birthDate);
+    const user = users.find((item) => normalizeEmail(item.email) === email && item.birthDate === birthDate);
     if (!user) return send(res, 401, { message: "Credenciais inválidas." });
     const token = await createSession(user);
     return send(res, 200, { token, user: publicUser(user) });
@@ -650,8 +645,16 @@ async function api(req, res, pathname) {
     if (!ticket) return send(res, 404, { message: "Ingresso não encontrado." });
     if (ticket.status !== "confirmed") return send(res, 409, { message: "Ingresso ainda não está confirmado." });
     if (ticket.checkinAt) return send(res, 409, { message: `Check-in já realizado em ${new Date(ticket.checkinAt).toLocaleString("pt-BR")}.` });
+    if (ticket.ticketType === "social" && body.socialFoodDelivered !== true) {
+      return send(res, 202, { requiresSocialFoodConfirmation: true, ticket });
+    }
+    if (ticket.ticketType === "meia" && body.meiaProofPresented !== true) {
+      return send(res, 202, { requiresMeiaProofConfirmation: true, ticket });
+    }
     ticket.checkinAt = now();
     ticket.checkedBy = auth.user.id;
+    if (ticket.ticketType === "social") ticket.socialFoodDelivered = true;
+    if (ticket.ticketType === "meia") ticket.meiaProofPresented = true;
     ticket.updatedAt = now();
     await db.save("tickets", ticket);
     return send(res, 200, { message: "Check-in realizado com sucesso.", ticket });
@@ -666,11 +669,20 @@ async function api(req, res, pathname) {
       ...ticket,
       manualConfirmedByName: ticket.manualConfirmedBy ? usersById.get(ticket.manualConfirmedBy)?.name || "Usuário removido" : null
     }));
+    const paidTickets = tickets.filter(isTicketPaid);
+    const soldByType = paidTickets.reduce((totals, ticket) => {
+      const ticketType = ticket.ticketType || "inteiro";
+      totals[ticketType] = (totals[ticketType] || 0) + 1;
+      return totals;
+    }, { inteiro: 0, meia: 0, social: 0 });
+    const receivedTotal = Number(paidTickets.reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2));
     return send(res, 200, {
-      paid: tickets.filter(isTicketPaid).length,
+      paid: paidTickets.length,
       pending: tickets.filter((ticket) => !isTicketPaid(ticket) && isMercadoPagoWaiting(ticket)).length,
       present: tickets.filter((ticket) => ticket.checkinAt).length,
       users: users.length,
+      soldByType,
+      receivedTotal,
       tickets: enrichedTickets
     });
   }

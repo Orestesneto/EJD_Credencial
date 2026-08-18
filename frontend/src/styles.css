@@ -235,6 +235,27 @@ select:focus {
   padding: 10px 0 14px;
 }
 
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 6px 0 12px;
+}
+
+.admin-tabs button {
+  min-height: 40px;
+  border-radius: 6px;
+  padding: 0 14px;
+  background: #edf3f8;
+  color: var(--navy);
+  font-weight: 800;
+}
+
+.admin-tabs button.active {
+  background: var(--emerald);
+  color: white;
+}
+
 .panel {
   background: white;
   border: 1px solid var(--line);
@@ -665,6 +686,14 @@ textarea {
   text-align: center;
 }
 
+.ticket-type-label {
+  display: block;
+  color: var(--emerald-dark);
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-align: center;
+}
+
 .ticket-code {
   display: flex;
   align-items: center;
@@ -726,6 +755,17 @@ textarea {
   color: var(--navy);
   font-size: 1.35rem;
   overflow-wrap: anywhere;
+}
+
+.ticket-social-message {
+  margin: 0;
+  border: 1px solid #b7ead5;
+  border-radius: 8px;
+  padding: 12px;
+  background: #e9f8f0;
+  color: var(--success);
+  font-weight: 800;
+  line-height: 1.4;
 }
 
 .ticket-qr-large {

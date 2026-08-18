@@ -21,18 +21,6 @@ function digits(value) {
   return String(value || "").replace(/\D/g, "");
 }
 
-function isValidCpf(value) {
-  const cpf = digits(value);
-  if (cpf.length !== 11 || /^(\d)\1+$/.test(cpf)) return false;
-  const calcDigit = (size) => {
-    let sum = 0;
-    for (let i = 0; i < size; i += 1) sum += Number(cpf[i]) * (size + 1 - i);
-    const rest = (sum * 10) % 11;
-    return rest === 10 ? 0 : rest;
-  };
-  return calcDigit(9) === Number(cpf[9]) && calcDigit(10) === Number(cpf[10]);
-}
-
 async function api(path, options = {}) {
   const token = localStorage.getItem(tokenKey);
   const response = await fetch(path, {
@@ -56,15 +44,15 @@ function Notice({ notice }) {
 function AuthScreen({ onAuth }) {
   const [tab, setTab] = useState("login");
   const [notice, setNotice] = useState(null);
-  const [login, setLogin] = useState({ cpf: "", birthDate: "" });
-  const [form, setForm] = useState({ name: "", cpf: "", whatsapp: "", birthDate: "" });
+  const [login, setLogin] = useState({ email: "", birthDate: "" });
+  const [form, setForm] = useState({ name: "", email: "", whatsapp: "", birthDate: "" });
 
   async function submitLogin(event) {
     event.preventDefault();
     try {
       const data = await api("/api/login", {
         method: "POST",
-        body: JSON.stringify({ cpf: digits(login.cpf), birthDate: digits(login.birthDate) })
+        body: JSON.stringify({ email: login.email.trim().toLowerCase(), birthDate: digits(login.birthDate) })
       });
       localStorage.setItem(tokenKey, data.token);
       onAuth(data.user);
@@ -75,16 +63,12 @@ function AuthScreen({ onAuth }) {
 
   async function submitRegister(event) {
     event.preventDefault();
-    if (!isValidCpf(form.cpf)) {
-      setNotice({ type: "error", text: "O CPF informado é inválido." });
-      return;
-    }
     try {
       const data = await api("/api/register", {
         method: "POST",
         body: JSON.stringify({
           name: form.name,
-          cpf: digits(form.cpf),
+          email: form.email.trim().toLowerCase(),
           whatsapp: digits(form.whatsapp),
           birthDate: digits(form.birthDate)
         })
@@ -115,12 +99,12 @@ function AuthScreen({ onAuth }) {
         {tab === "login" ? (
           <form onSubmit={submitLogin} className="form">
             <label>
-              CPF
-              <input inputMode="numeric" maxLength="11" value={login.cpf} onChange={(e) => setLogin({ ...login, cpf: digits(e.target.value).slice(0, 11) })} required />
+              E-mail
+              <input type="email" autoComplete="email" value={login.email} onChange={(e) => setLogin({ ...login, email: e.target.value })} required />
             </label>
             <label>
               Data de nascimento
-              <input inputMode="numeric" maxLength="9" value={login.birthDate} onChange={(e) => setLogin({ ...login, birthDate: digits(e.target.value).slice(0, 9) })} required />
+              <input inputMode="numeric" autoComplete="bday" maxLength="8" placeholder="ddmmaaaa" value={login.birthDate} onChange={(e) => setLogin({ ...login, birthDate: digits(e.target.value).slice(0, 8) })} required />
             </label>
             <button className="primary">Entrar</button>
           </form>
@@ -131,8 +115,8 @@ function AuthScreen({ onAuth }) {
               <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
             </label>
             <label>
-              CPF
-              <input inputMode="numeric" maxLength="11" value={form.cpf} onChange={(e) => setForm({ ...form, cpf: digits(e.target.value).slice(0, 11) })} required />
+              E-mail
+              <input type="email" autoComplete="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
             </label>
             <label>
               WhatsApp
@@ -157,7 +141,7 @@ function Profile({ user }) {
       <div className="profile-grid">
         <Info label="Nome" value={user.name} />
         <Info label="WhatsApp" value={user.whatsapp} />
-        <Info label="CPF" value={user.cpf} />
+        <Info label="E-mail" value={user.email} />
         <Info label="Perfil" value={roles[user.role] || "usuarios"} />
       </div>
     </section>
@@ -178,9 +162,40 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString("pt-BR");
 }
 
+function formatCurrency(value) {
+  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
 function shortName(value) {
   const parts = String(value || "").trim().split(/\s+/).filter(Boolean);
   return parts.slice(0, 2).join(" ") || "Participante";
+}
+
+const socialTicketMessage = "Ingressos do tipo Social exigem a doação de 1 kg de alimento não perecível, que deverá ser entregue na entrada do evento.";
+const meiaTicketMessage = "O Participante deverá apressentar  o comprovante que tem direito a meia entrada";
+
+const meiaTicketNotice = "Para ingressos de meia-entrada, poderá ser solicitada, na entrada do evento, a apresentação do documento comprovatório.";
+
+function ticketTypeLabel(ticketType) {
+  if (ticketType === "social") return "INGRESSO SOCIAL";
+  if (ticketType === "meia") return "INGRESSO MEIO";
+  return "INGRESSO INTEIRA";
+}
+
+function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = String(text).split(" ");
+  let line = "";
+  for (const word of words) {
+    const testLine = line ? `${line} ${word}` : word;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      ctx.fillText(line, x, y);
+      line = word;
+      y += lineHeight;
+    } else {
+      line = testLine;
+    }
+  }
+  if (line) ctx.fillText(line, x, y);
 }
 
 function paymentStatusLabel(value) {
@@ -308,10 +323,29 @@ async function createTicketImage(ticket) {
 
   ctx.font = "700 32px Arial";
   ctx.fillText("Código", 90, 500);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(80, 455, 420, 70);
+  ctx.fillStyle = "#071b33";
+  ctx.font = "700 32px Arial";
+  ctx.fillText("Tipo do bilhete", 90, 485);
+  ctx.font = "700 40px Arial";
+  ctx.fillText(ticketTypeLabel(ticket.ticketType), 90, 545);
+  ctx.font = "700 32px Arial";
+  ctx.fillText("CÃ³digo", 90, 625);
   ctx.font = "700 54px Arial";
-  ctx.fillText(ticket.code, 90, 570);
+  ctx.fillText(ticket.code, 90, 695);
 
-  ctx.drawImage(qr, 190, 635, 520, 520);
+  ctx.drawImage(qr, 245, 720, 410, 410);
+  if (ticket.ticketType === "social") {
+    ctx.fillStyle = "#071b33";
+    ctx.font = "700 24px Arial";
+    wrapCanvasText(ctx, socialTicketMessage, 90, 1170, 720, 26);
+  }
+  if (ticket.ticketType === "meia") {
+    ctx.fillStyle = "#071b33";
+    ctx.font = "700 24px Arial";
+    wrapCanvasText(ctx, meiaTicketNotice, 90, 1170, 720, 26);
+  }
   return canvas.toDataURL("image/png");
 }
 
@@ -401,7 +435,7 @@ async function downloadTicket(ticket) {
 
 function BuyTicket({ refresh }) {
   const [config, setConfig] = useState(null);
-  const [ticketQuantities, setTicketQuantities] = useState({ inteiro: 1, meia: 0, social: 0 });
+  const [ticketQuantities, setTicketQuantities] = useState({ inteiro: 0, meia: 0, social: 0 });
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [pixModal, setPixModal] = useState(null);
   const [ticketLotsModal, setTicketLotsModal] = useState(true);
@@ -537,6 +571,7 @@ function BuyTicket({ refresh }) {
       <div className="fee-notes">
         <p>* Pix: taxa de serviço de 1%.</p>
         <p>** Cartão de crédito: taxa de serviço de 8%.</p>
+        <p>*** {meiaTicketNotice}</p>
       </div>
       {ticketLotsModal && <TicketLotsModal currentSaleLot={config?.settings?.currentSaleLot} onClose={() => setTicketLotsModal(false)} />}
       {socialTicketModal && <SocialTicketModal onConfirm={confirmSocialTicket} onClose={() => setSocialTicketModal(false)} />}
@@ -556,7 +591,7 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
       ]
     },
     { id: "lote2",
-      name: "2° lote",
+      name: "2° Lote",
       prices: [
         ["Inteira", "80,00"],
         ["Meia", "40,00"],
@@ -564,7 +599,7 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
       ]
     },
     { id: "lote3",
-      name: "3° lote",
+      name: "3° Lote",
       prices: [
         ["Inteira", "100,00"],
         ["Meia", "50,00"],
@@ -689,6 +724,7 @@ function MyTickets({ tickets }) {
             <article className="ticket" key={ticket.id} role="button" tabIndex="0" onClick={() => setSelectedTicket(ticket)} onKeyDown={(event) => { if (event.key === "Enter") setSelectedTicket(ticket); }}>
               <div>
                 <strong>{shortName(ticket.participantName)}</strong>
+                <span className="ticket-type-label">{ticketTypeLabel(ticket.ticketType)}</span>
               </div>
               <div className="ticket-code">
                 <span>{ticket.checkinAt ? "QRcode ja foi utilizado" : "Código"}</span>
@@ -721,6 +757,12 @@ function TicketModal({ ticket, onClose }) {
           <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
         </div>
         <div className="ticket-modal-code">
+          <span>Tipo do bilhete</span>
+          <strong>{ticketTypeLabel(ticket.ticketType)}</strong>
+        </div>
+        {ticket.ticketType === "social" && <p className="ticket-social-message">{socialTicketMessage}</p>}
+        {ticket.ticketType === "meia" && <p className="ticket-social-message">{meiaTicketNotice}</p>}
+        <div className="ticket-modal-code">
           <span>{ticket.checkinAt ? "QRcode ja foi utilizado" : "Código"}</span>
           <strong>{ticket.code}</strong>
         </div>
@@ -739,24 +781,98 @@ function TicketModal({ ticket, onClose }) {
   );
 }
 
+function SocialCheckinModal({ ticket, onConfirm, onClose }) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal confirm-modal">
+        <div className="modal-head">
+          <h3>Ingresso Social</h3>
+          <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        <p>{socialTicketMessage}</p>
+        <div className="ticket-modal-code">
+          <span>Participante</span>
+          <strong>{shortName(ticket.participantName)}</strong>
+        </div>
+        <div className="modal-actions">
+          <button className="primary" onClick={onConfirm}>O participante entregou o alimento</button>
+          <button className="secondary" onClick={onClose}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MeiaCheckinModal({ ticket, onConfirm, onClose }) {
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <div className="modal confirm-modal">
+        <div className="modal-head">
+          <h3>Ingresso Meio</h3>
+          <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        <p>{meiaTicketMessage}</p>
+        <div className="ticket-modal-code">
+          <span>Participante</span>
+          <strong>{shortName(ticket.participantName)}</strong>
+        </div>
+        <div className="modal-actions">
+          <button className="primary" onClick={onConfirm}>O participante apresentou o comprovante</button>
+          <button className="secondary" onClick={onClose}>Cancelar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CheckinPanel() {
   const [value, setValue] = useState("");
   const [notice, setNotice] = useState(null);
   const [scanning, setScanning] = useState(false);
+  const [socialCheckinTicket, setSocialCheckinTicket] = useState(null);
+  const [meiaCheckinTicket, setMeiaCheckinTicket] = useState(null);
   const readerRef = useRef(null);
   const qrRef = useRef(null);
 
-  async function validate(input) {
+  async function validate(input, options = {}) {
     try {
       const data = await api("/api/checkin/validate", {
         method: "POST",
-        body: JSON.stringify({ value: input || value })
+        body: JSON.stringify({
+          value: input || value,
+          socialFoodDelivered: options.socialFoodDelivered === true,
+          meiaProofPresented: options.meiaProofPresented === true
+        })
       });
+      if (data.requiresSocialFoodConfirmation) {
+        setSocialCheckinTicket(data.ticket);
+        setMeiaCheckinTicket(null);
+        setNotice(null);
+        return;
+      }
+      if (data.requiresMeiaProofConfirmation) {
+        setMeiaCheckinTicket(data.ticket);
+        setSocialCheckinTicket(null);
+        setNotice(null);
+        return;
+      }
       setNotice({ type: "success", text: data.message });
       setValue("");
+      setSocialCheckinTicket(null);
+      setMeiaCheckinTicket(null);
     } catch (error) {
       setNotice({ type: "error", text: error.message });
     }
+  }
+
+  async function confirmSocialFoodDelivery() {
+    if (!socialCheckinTicket) return;
+    await validate(socialCheckinTicket.code, { socialFoodDelivered: true });
+  }
+
+  async function confirmMeiaProofPresented() {
+    if (!meiaCheckinTicket) return;
+    await validate(meiaCheckinTicket.code, { meiaProofPresented: true });
   }
 
   async function startCamera() {
@@ -808,6 +924,20 @@ function CheckinPanel() {
         </label>
         <button className="primary">Validar</button>
       </form>
+      {socialCheckinTicket && (
+        <SocialCheckinModal
+          ticket={socialCheckinTicket}
+          onConfirm={confirmSocialFoodDelivery}
+          onClose={() => setSocialCheckinTicket(null)}
+        />
+      )}
+      {meiaCheckinTicket && (
+        <MeiaCheckinModal
+          ticket={meiaCheckinTicket}
+          onConfirm={confirmMeiaProofPresented}
+          onClose={() => setMeiaCheckinTicket(null)}
+        />
+      )}
     </section>
   );
 }
@@ -817,6 +947,7 @@ function AdminPanel({ refresh }) {
   const [settings, setSettings] = useState(null);
   const [users, setUsers] = useState([]);
   const [notice, setNotice] = useState(null);
+  const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
 
   async function load() {
     const [config, summaryData, userData] = await Promise.all([
@@ -881,6 +1012,12 @@ function AdminPanel({ refresh }) {
 
   return (
     <>
+      <div className="admin-tabs">
+        <button type="button" className={activeAdminTab === "dashboard" ? "active" : ""} onClick={() => setActiveAdminTab("dashboard")}>Área exclusiva</button>
+        <button type="button" className={activeAdminTab === "permissions" ? "active" : ""} onClick={() => setActiveAdminTab("permissions")}>Permissões de usuários</button>
+      </div>
+      {activeAdminTab === "dashboard" && (
+        <>
       <section className="panel">
         <h2>Ingresso</h2>
         <Notice notice={notice} />
@@ -931,6 +1068,10 @@ function AdminPanel({ refresh }) {
               <Info label="Aguardando" value={summary.pending} />
               <Info label="Presentes" value={summary.present} />
               <Info label="Usuários" value={summary.users} />
+              <Info label="Inteiras vendidas" value={summary.soldByType?.inteiro || 0} />
+              <Info label="Meias vendidas" value={summary.soldByType?.meia || 0} />
+              <Info label="Sociais vendidas" value={summary.soldByType?.social || 0} />
+              <Info label="Total recebido" value={formatCurrency(summary.receivedTotal)} />
             </div>
             <div className="table">
               {summary.tickets.map((ticket) => {
@@ -965,8 +1106,12 @@ function AdminPanel({ refresh }) {
         )}
       </section>
 
+        </>
+      )}
+
+      {activeAdminTab === "permissions" && (
       <section className="panel">
-        <h2>Usuários</h2>
+        <h2>Permissões de usuários</h2>
         <div className="user-cards">
           {users.map((user) => (
             <article className="user-card" key={user.id}>
@@ -981,6 +1126,7 @@ function AdminPanel({ refresh }) {
           ))}
         </div>
       </section>
+      )}
     </>
   );
 }
