@@ -695,7 +695,7 @@ async function api(req, res, pathname) {
     }
     const result = await trySendPurchasedTicketsEmail(orderTickets);
     if (!result.sent) return send(res, 502, { message: result.error || "Não foi possível enviar o e-mail." });
-    return send(res, 200, { message: "Ingressos enviados por e-mail com sucesso." });
+    return send(res, 200, { message: "Ingressos enviados por e-mail com sucesso. Verifique também as pastas Spam e Lixo eletrônico." });
   }
 
   if (pathname === "/api/tickets/checkout" && req.method === "POST") {
