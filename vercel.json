@@ -3,7 +3,8 @@
   "buildCommand": "npm run build",
   "functions": {
     "server.js": {
-      "includeFiles": "frontend/dist/**"
+      "includeFiles": "{frontend/dist/**,assets/fonts/**}",
+      "maxDuration": 60
     }
   },
   "routes": [

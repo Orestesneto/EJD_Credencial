@@ -3,6 +3,9 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const QRCode = require("qrcode");
+const sharp = require("sharp");
+const nodemailer = require("nodemailer");
+const opentype = require("opentype.js");
 const { neon } = require("@neondatabase/serverless");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -14,11 +17,19 @@ const DATABASE_URL = normalizeDatabaseUrl(process.env.NEON_DATABASE_URL || proce
 const SUPABASE_URL = normalizeSupabaseUrl(process.env.SUPABASE_URL);
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const MP_TOKEN = process.env.MERCADO_PAGO_ACCESS_TOKEN;
+const SMTP_HOST = String(process.env.SMTP_HOST || "smtp.gmail.com").trim();
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_USER = String(process.env.SMTP_USER || "").trim();
+const SMTP_PASS = String(process.env.SMTP_PASS || "").replace(/\s/g, "");
+const TICKET_EMAIL_FROM = String(process.env.TICKET_EMAIL_FROM || "").trim();
 
 const neonSql = DATABASE_URL ? neon(DATABASE_URL) : null;
 const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 const tables = ["users", "tickets", "settings", "sessions"];
 const tableNames = new Set(tables);
+const dejavuFontsDir = path.join(__dirname, "assets", "fonts");
+const ticketFontRegular = opentype.loadSync(path.join(dejavuFontsDir, "DejaVuSans.ttf"));
+const ticketFontBold = opentype.loadSync(path.join(dejavuFontsDir, "DejaVuSans-Bold.ttf"));
 const DEFAULT_ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL);
 const DEFAULT_ADMIN_BIRTH_DATE = String(process.env.ADMIN_BIRTH_DATE || "").replace(/\D/g, "");
 let seedDone = false;
@@ -391,6 +402,122 @@ async function ticketWithQr(ticket) {
   };
 }
 
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function ticketTypeEmailLabel(ticketType) {
+  if (ticketType === "social") return "Ingresso Social";
+  if (ticketType === "meia") return "Meia-entrada";
+  return "Ingresso Inteiro";
+}
+
+function ticketImageText(value, x, y, fontSize, fill, options = {}) {
+  const font = options.bold ? ticketFontBold : ticketFontRegular;
+  const text = String(value || "");
+  const startX = options.center ? x - font.getAdvanceWidth(text, fontSize) / 2 : x;
+  return `<path d="${font.getPath(text, startX, y, fontSize).toPathData(2)}" fill="${fill}"/>`;
+}
+
+async function createTicketEmailImage(ticket) {
+  const qrBuffer = await QRCode.toBuffer(ticket.code, { width: 440, margin: 2, type: "png" });
+  const qrDataUrl = `data:image/png;base64,${qrBuffer.toString("base64")}`;
+  const ticketType = ticketTypeEmailLabel(ticket.ticketType);
+  const additionalNotice = ticket.ticketType === "social"
+    ? "Leve 1 kg de alimento não perecível para entregar na entrada."
+    : ticket.ticketType === "meia"
+      ? "Leve o documento que comprova o direito à meia-entrada."
+      : "Apresente este bilhete na entrada do evento.";
+  const svg = `
+    <svg width="900" height="1300" viewBox="0 0 900 1300" xmlns="http://www.w3.org/2000/svg">
+      <rect width="900" height="1300" rx="32" fill="#f8fafc"/>
+      <rect width="900" height="210" rx="32" fill="#06314f"/>
+      <rect y="178" width="900" height="32" fill="#06314f"/>
+      ${ticketImageText("EJD - CREDENCIAMENTO", 70, 82, 30, "#00bd84", { bold: true })}
+      ${ticketImageText("Encontrão 25 Anos", 70, 145, 48, "#ffffff", { bold: true })}
+      ${ticketImageText("PARTICIPANTE", 70, 280, 25, "#64748b", { bold: true })}
+      ${ticketImageText(ticket.participantName, 70, 330, 36, "#071b33", { bold: true })}
+      ${ticketImageText("TIPO DO BILHETE", 70, 410, 25, "#64748b", { bold: true })}
+      ${ticketImageText(ticketType, 70, 462, 40, "#071b33", { bold: true })}
+      ${ticketImageText("CÓDIGO", 70, 540, 25, "#64748b", { bold: true })}
+      ${ticketImageText(ticket.code, 70, 602, 54, "#071b33", { bold: true })}
+      <image href="${qrDataUrl}" x="230" y="645" width="440" height="440"/>
+      ${ticketImageText("Campina Grande - PB", 450, 1145, 25, "#071b33", { bold: true, center: true })}
+      ${ticketImageText(additionalNotice, 450, 1200, 21, "#475569", { center: true })}
+      ${ticketImageText("Use o QR Code ou o código acima para o credenciamento.", 450, 1245, 20, "#64748b", { center: true })}
+    </svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+async function sendPurchasedTicketsEmail(tickets) {
+  const pendingTickets = tickets.filter((ticket) => isTicketPaid(ticket) && !ticket.emailSentAt);
+  if (!pendingTickets.length) return { skipped: true };
+  if (!SMTP_USER || !SMTP_PASS || !TICKET_EMAIL_FROM) {
+    console.warn("E-mail dos ingressos não enviado: configure SMTP_USER, SMTP_PASS e TICKET_EMAIL_FROM.");
+    return { skipped: true };
+  }
+
+  const users = await db.all("users");
+  const user = users.find((item) => item.id === pendingTickets[0].userId);
+  const recipient = normalizeEmail(user?.email || pendingTickets[0].participantEmail);
+  if (!isValidEmail(recipient)) throw new Error("O comprador não possui um e-mail válido.");
+
+  const attachments = await Promise.all(pendingTickets.map(async (ticket, index) => ({
+    filename: `ingresso-${index + 1}-${ticket.code}.png`,
+    content: await createTicketEmailImage(ticket),
+    contentType: "image/png"
+  })));
+  const emailKey = hash(pendingTickets.map((ticket) => ticket.id).sort().join("|")).slice(0, 48);
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_PORT === 465,
+    auth: { user: SMTP_USER, pass: SMTP_PASS },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000
+  });
+  const result = await transporter.sendMail({
+    from: TICKET_EMAIL_FROM,
+    to: recipient,
+    subject: `${pendingTickets.length === 1 ? "Seu ingresso" : "Seus ingressos"} - Encontrão 25 Anos`,
+    html: `<h1>Pagamento confirmado!</h1><p>Olá, ${escapeXml(user?.name || pendingTickets[0].participantName)}.</p><p>${pendingTickets.length === 1 ? "Seu ingresso está anexado" : "Seus ingressos estão anexados"} a este e-mail. Guarde ${pendingTickets.length === 1 ? "a imagem" : "as imagens"} e apresente o QR Code na entrada do evento.</p>`,
+    attachments,
+    messageId: `<ejd-tickets-${emailKey}@gmail.com>`
+  });
+
+  const sentAt = now();
+  for (const ticket of pendingTickets) {
+    ticket.emailSentAt = sentAt;
+    ticket.emailMessageId = result.messageId || null;
+    ticket.emailLastError = null;
+    ticket.updatedAt = sentAt;
+    await db.save("tickets", ticket);
+  }
+  console.log(`Ingressos enviados por e-mail: ${pendingTickets.length}; mensagem: ${result.messageId || "sem-id"}.`);
+  return { sent: true, id: result.messageId };
+}
+
+async function trySendPurchasedTicketsEmail(tickets) {
+  try {
+    return await sendPurchasedTicketsEmail(tickets);
+  } catch (error) {
+    console.error("Falha ao enviar ingressos por e-mail:", error.message);
+    const failedAt = now();
+    for (const ticket of tickets.filter((item) => isTicketPaid(item) && !item.emailSentAt)) {
+      ticket.emailLastError = error.message;
+      ticket.emailLastAttemptAt = failedAt;
+      await db.save("tickets", ticket);
+    }
+    return { sent: false, error: error.message };
+  }
+}
+
 function mercadoPagoErrorMessage(data, fallback) {
   const cause = Array.isArray(data?.cause) ? data.cause : [];
   const details = cause
@@ -493,7 +620,8 @@ async function api(req, res, pathname) {
         currentSaleLot: saleLots.has(settings?.currentSaleLot) ? settings.currentSaleLot : "relampago",
         ticketSalesClosed: Boolean(settings?.ticketSalesClosed)
       },
-      paymentConfigured: Boolean(MP_TOKEN)
+      paymentConfigured: Boolean(MP_TOKEN),
+      ticketEmailConfigured: Boolean(SMTP_USER && SMTP_PASS && TICKET_EMAIL_FROM)
     });
   }
 
@@ -541,6 +669,7 @@ async function api(req, res, pathname) {
   if (pathname === "/api/me" && req.method === "GET") {
     if (!auth) return send(res, 401, { message: "Sessão inválida." });
     const tickets = (await db.all("tickets")).filter((ticket) => ticket.userId === auth.user.id && !isExpiredPendingTicket(ticket));
+    await trySendPurchasedTicketsEmail(tickets);
     const withQr = await Promise.all(tickets.map(ticketWithQr));
     return send(res, 200, { user: publicUser(auth.user), tickets: withQr });
   }
@@ -548,6 +677,25 @@ async function api(req, res, pathname) {
   if (pathname === "/api/logout" && req.method === "POST") {
     if (auth) await db.removeWhere("sessions", (session) => session.id === auth.session.id);
     return send(res, 200, { ok: true });
+  }
+
+  const ticketEmailMatch = pathname.match(/^\/api\/tickets\/([^/]+)\/email$/);
+  if (ticketEmailMatch && req.method === "POST") {
+    if (!auth) return send(res, 401, { message: "Sessão inválida." });
+    const allTickets = await db.all("tickets");
+    const selectedTicket = allTickets.find((ticket) => ticket.id === ticketEmailMatch[1] && ticket.userId === auth.user.id);
+    if (!selectedTicket || !isTicketPaid(selectedTicket)) return send(res, 404, { message: "Ingresso confirmado não encontrado." });
+    const orderTickets = allTickets.filter((ticket) => ticket.userId === auth.user.id && ticket.orderId === selectedTicket.orderId && isTicketPaid(ticket));
+    for (const ticket of orderTickets) {
+      ticket.emailSentAt = null;
+      ticket.emailMessageId = null;
+      ticket.emailLastError = null;
+      ticket.updatedAt = now();
+      await db.save("tickets", ticket);
+    }
+    const result = await trySendPurchasedTicketsEmail(orderTickets);
+    if (!result.sent) return send(res, 502, { message: result.error || "Não foi possível enviar o e-mail." });
+    return send(res, 200, { message: "Ingressos enviados por e-mail com sucesso." });
   }
 
   if (pathname === "/api/tickets/checkout" && req.method === "POST") {
@@ -585,6 +733,7 @@ async function api(req, res, pathname) {
       userId: auth.user.id,
       participantName: auth.user.name,
       participantWhatsapp: auth.user.whatsapp,
+      participantEmail: auth.user.email,
       status: "pending",
       mercadoPagoStatus: "pending",
       ticketType: item.ticketType,
@@ -737,6 +886,7 @@ async function api(req, res, pathname) {
     ticket.manualConfirmedByName = auth.user.name;
     ticket.updatedAt = now();
     await db.save("tickets", ticket);
+    await trySendPurchasedTicketsEmail([ticket]);
     return send(res, 200, { ticket: await ticketWithQr(ticket) });
   }
 
@@ -772,6 +922,7 @@ async function mercadoPagoWebhook(req, res) {
       ticket.updatedAt = now();
       await db.save("tickets", ticket);
     }
+    if (payment.status === "approved") await trySendPurchasedTicketsEmail(orderTickets);
   }
   return send(res, 200, { ok: true });
 }

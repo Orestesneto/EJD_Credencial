@@ -714,10 +714,27 @@ function PaymentConfirmedModal({ onClose, onOpenTickets }) {
 
 function MyTickets({ tickets }) {
   const [selectedTicket, setSelectedTicket] = useState(null);
+  const [emailingTicketId, setEmailingTicketId] = useState(null);
+  const [notice, setNotice] = useState(null);
   const confirmed = tickets.filter(isTicketPaid);
+
+  async function resendEmail(ticket) {
+    setEmailingTicketId(ticket.id);
+    setNotice(null);
+    try {
+      const result = await api(`/api/tickets/${ticket.id}/email`, { method: "POST", body: "{}" });
+      setNotice({ type: "success", text: result.message });
+    } catch (error) {
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setEmailingTicketId(null);
+    }
+  }
+
   return (
     <section className="panel">
       <h2>Meus ingressos</h2>
+      <Notice notice={notice} />
       <div className="ticket-list">
         {confirmed.map((ticket) => {
           return (
@@ -738,6 +755,9 @@ function MyTickets({ tickets }) {
               )}
               <div className="ticket-actions">
                 <button className="secondary" onClick={(event) => { event.stopPropagation(); downloadTicket(ticket); }}>Baixar</button>
+                <button className="secondary" disabled={Boolean(emailingTicketId)} onClick={(event) => { event.stopPropagation(); resendEmail(ticket); }}>
+                  {emailingTicketId === ticket.id ? "Enviando..." : "Enviar por e-mail"}
+                </button>
               </div>
             </article>
           );
