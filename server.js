@@ -27,6 +27,7 @@ const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPAB
 const tables = ["users", "tickets", "settings", "sessions"];
 const tableNames = new Set(tables);
 const dejavuFontsDir = path.join(__dirname, "assets", "fonts");
+const brandingDir = path.join(__dirname, "frontend", "public", "branding");
 const ticketFontRegular = opentype.loadSync(path.join(dejavuFontsDir, "DejaVuSans.ttf"));
 const ticketFontBold = opentype.loadSync(path.join(dejavuFontsDir, "DejaVuSans-Bold.ttf"));
 const DEFAULT_ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL);
@@ -426,6 +427,8 @@ function ticketImageText(value, x, y, fontSize, fill, options = {}) {
 async function createTicketEmailImage(ticket) {
   const qrBuffer = await QRCode.toBuffer(ticket.code, { width: 440, margin: 2, type: "png" });
   const qrDataUrl = `data:image/png;base64,${qrBuffer.toString("base64")}`;
+  const eventLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "trilhos-destinos.png")).toString("base64")}`;
+  const anniversaryLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "25-anos-ejd.png")).toString("base64")}`;
   const ticketType = ticketTypeEmailLabel(ticket.ticketType);
   const additionalNotice = ticket.ticketType === "social"
     ? "Leve 1 kg de alimento não perecível para entregar na entrada."
@@ -437,8 +440,11 @@ async function createTicketEmailImage(ticket) {
       <rect width="900" height="1300" rx="32" fill="#f8fafc"/>
       <rect width="900" height="210" rx="32" fill="#06314f"/>
       <rect y="178" width="900" height="32" fill="#06314f"/>
-      ${ticketImageText("EJD - CREDENCIAMENTO", 70, 82, 30, "#00bd84", { bold: true })}
-      ${ticketImageText("Encontrão 25 Anos", 70, 145, 48, "#ffffff", { bold: true })}
+      <image href="${eventLogoDataUrl}" x="55" y="30" width="110" height="150" preserveAspectRatio="xMidYMid meet"/>
+      <rect x="185" y="52" width="2" height="108" fill="#ff9800"/>
+      <image href="${anniversaryLogoDataUrl}" x="210" y="42" width="120" height="120" preserveAspectRatio="xMidYMid meet"/>
+      ${ticketImageText("EJD - CREDENCIAMENTO", 365, 82, 30, "#ffcf7a", { bold: true })}
+      ${ticketImageText("Encontrão 25 Anos", 365, 145, 48, "#ffffff", { bold: true })}
       ${ticketImageText("PARTICIPANTE", 70, 280, 25, "#64748b", { bold: true })}
       ${ticketImageText(ticket.participantName, 70, 330, 36, "#071b33", { bold: true })}
       ${ticketImageText("TIPO DO BILHETE", 70, 410, 25, "#64748b", { bold: true })}

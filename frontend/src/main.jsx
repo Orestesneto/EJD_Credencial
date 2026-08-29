@@ -65,7 +65,12 @@ function BrandLockup({ compact = false, inverse = false }) {
 }
 
 function TopbarLogo() {
-  return <img className="topbar-logo" src="/branding/monocromatica-azul.png" alt="Trilhos e Destinos" />;
+  return (
+    <div className="topbar-logos">
+      <img className="topbar-logo" src="/branding/monocromatica-azul.png" alt="Trilhos e Destinos" />
+      <img className="topbar-anniversary-logo" src="/branding/25-anos-ejd.png" alt="25 Anos EJD" />
+    </div>
+  );
 }
 
 function AuthScreen({ onAuth }) {
@@ -770,6 +775,11 @@ function MyTickets({ tickets }) {
         {confirmed.map((ticket) => {
           return (
             <article className="ticket" key={ticket.id} role="button" tabIndex="0" onClick={() => setSelectedTicket(ticket)} onKeyDown={(event) => { if (event.key === "Enter") setSelectedTicket(ticket); }}>
+              <div className="ticket-branding" aria-label="Marcas do evento">
+                <img src="/branding/monocromatica-azul.png" alt="Trilhos e Destinos" />
+                <i aria-hidden="true" />
+                <img src="/branding/25-anos-ejd.png" alt="25 Anos EJD" />
+              </div>
               <div>
                 <strong>{shortName(ticket.participantName)}</strong>
                 <span className="ticket-type-label">{ticketTypeLabel(ticket.ticketType)}</span>
@@ -806,6 +816,11 @@ function TicketModal({ ticket, onClose }) {
         <div className="modal-head">
           <h3>{shortName(ticket.participantName)}</h3>
           <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        <div className="ticket-branding ticket-modal-branding" aria-label="Marcas do evento">
+          <img src="/branding/monocromatica-azul.png" alt="Trilhos e Destinos" />
+          <i aria-hidden="true" />
+          <img src="/branding/25-anos-ejd.png" alt="25 Anos EJD" />
         </div>
         <div className="ticket-modal-code">
           <span>Tipo do bilhete</span>
