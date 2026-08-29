@@ -80,14 +80,13 @@ SMTP_HOST=smtp.gmail.com
 SMTP_PORT=465
 SMTP_USER=
 SMTP_PASS=
-TICKET_EMAIL_FROM=Encontrão EJD 2025 <seuemail@gmail.com>
 ADMIN_EMAIL=
 ADMIN_BIRTH_DATE=
 APP_URL=http://localhost:3000
 PORT=3000
 ```
 
-Para enviar automaticamente os ingressos por e-mail após a confirmação do pagamento, configure `SMTP_USER`, `SMTP_PASS` e `TICKET_EMAIL_FROM`. Para uma conta Gmail pessoal, use uma senha de app do Google em `SMTP_PASS`, nunca a senha normal da conta.
+Para enviar automaticamente os ingressos por e-mail após a confirmação do pagamento, configure `SMTP_USER` e `SMTP_PASS`. Para uma conta Gmail pessoal, use uma senha de app do Google em `SMTP_PASS`, nunca a senha normal da conta.
 
 Prioridade de banco:
 

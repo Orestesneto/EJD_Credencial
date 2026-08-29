@@ -21,7 +21,6 @@ const SMTP_HOST = String(process.env.SMTP_HOST || "smtp.gmail.com").trim();
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const SMTP_USER = String(process.env.SMTP_USER || "").trim();
 const SMTP_PASS = String(process.env.SMTP_PASS || "").replace(/\s/g, "");
-const TICKET_EMAIL_FROM = String(process.env.TICKET_EMAIL_FROM || "").trim();
 
 const neonSql = DATABASE_URL ? neon(DATABASE_URL) : null;
 const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
@@ -457,8 +456,8 @@ async function createTicketEmailImage(ticket) {
 async function sendPurchasedTicketsEmail(tickets) {
   const pendingTickets = tickets.filter((ticket) => isTicketPaid(ticket) && !ticket.emailSentAt);
   if (!pendingTickets.length) return { skipped: true };
-  if (!SMTP_USER || !SMTP_PASS || !TICKET_EMAIL_FROM) {
-    console.warn("E-mail dos ingressos não enviado: configure SMTP_USER, SMTP_PASS e TICKET_EMAIL_FROM.");
+  if (!SMTP_USER || !SMTP_PASS) {
+    console.warn("E-mail dos ingressos não enviado: configure SMTP_USER e SMTP_PASS.");
     return { skipped: true };
   }
 
@@ -483,7 +482,7 @@ async function sendPurchasedTicketsEmail(tickets) {
     socketTimeout: 20000
   });
   const result = await transporter.sendMail({
-    from: TICKET_EMAIL_FROM,
+    from: { name: "Encontrão EJD 2025", address: SMTP_USER },
     to: recipient,
     subject: `${pendingTickets.length === 1 ? "Seu ingresso" : "Seus ingressos"} - Encontrão 25 Anos`,
     html: `<h1>Pagamento confirmado!</h1><p>Olá, ${escapeXml(user?.name || pendingTickets[0].participantName)}.</p><p>${pendingTickets.length === 1 ? "Seu ingresso está anexado" : "Seus ingressos estão anexados"} a este e-mail. Guarde ${pendingTickets.length === 1 ? "a imagem" : "as imagens"} e apresente o QR Code na entrada do evento.</p>`,
@@ -621,7 +620,7 @@ async function api(req, res, pathname) {
         ticketSalesClosed: Boolean(settings?.ticketSalesClosed)
       },
       paymentConfigured: Boolean(MP_TOKEN),
-      ticketEmailConfigured: Boolean(SMTP_USER && SMTP_PASS && TICKET_EMAIL_FROM)
+      ticketEmailConfigured: Boolean(SMTP_USER && SMTP_PASS)
     });
   }
 

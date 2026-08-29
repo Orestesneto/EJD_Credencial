@@ -41,6 +41,33 @@ function Notice({ notice }) {
   return <div className={`notice ${notice.type || "info"}`}>{notice.text}</div>;
 }
 
+function AnniversaryMark({ compact = false, inverse = false }) {
+  return (
+    <div className={`event-brand ${compact ? "compact" : ""}`} aria-label="Encontrão EJD 25 anos — Trilhos e Destinos">
+      <img src="/branding/25-anos-ejd.png" alt="25 Anos EJD" />
+      {!compact && <div className="event-brand-copy"><span>ENCONTRÃO EJD 25 ANOS</span><strong>TRILHOS<br />E DESTINOS</strong></div>}
+    </div>
+  );
+}
+
+function BrandMark ({ compact = false }) {
+  return (
+    <div className={`anniversary-brand ${compact ? "compact" : ""}`} aria-label="25 Anos Encontro de Jovens com Deus">
+      <img className="event-brand-icon" src="/branding/trilhos-destinos.png" alt="Trilhos e Destinos" />
+      
+      {!compact && <span>25 anos<br />EJD</span>}
+    </div>
+  );
+}
+
+function BrandLockup({ compact = false, inverse = false }) {
+  return <div className={`brand-lockup ${compact ? "compact" : ""} ${inverse ? "inverse" : ""}`}><BrandMark compact={compact} inverse={inverse} /><i aria-hidden="true" /><AnniversaryMark compact={compact} /></div>;
+}
+
+function TopbarLogo() {
+  return <img className="topbar-logo" src="/branding/monocromatica-azul.png" alt="Trilhos e Destinos" />;
+}
+
 function AuthScreen({ onAuth }) {
   const [tab, setTab] = useState("login");
   const [notice, setNotice] = useState(null);
@@ -82,8 +109,12 @@ function AuthScreen({ onAuth }) {
 
   return (
     <main className="auth-shell">
+      <div className="auth-rail" aria-hidden="true">
+        <BrandMark />
+             </div>
       <section className="auth-panel">
-        <div className="brand">
+        <div className="brand auth-brand">
+          <AnniversaryMark />
           <span>EJD - credenciamento</span>
           <strong>Encontrão 25 Anos</strong>
           <small>Campina Grande - PB</small>
@@ -1229,7 +1260,8 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
+        <TopbarLogo />
+        <div className="topbar-title">
           <span>EJD - credenciamento</span>
           <strong>Encontrão 25 Anos</strong>
         </div>
