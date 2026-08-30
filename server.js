@@ -8,6 +8,7 @@ const nodemailer = require("nodemailer");
 const opentype = require("opentype.js");
 const { neon } = require("@neondatabase/serverless");
 const { createClient } = require("@supabase/supabase-js");
+const mysql = require("mysql2/promise");
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, "data");
@@ -21,9 +22,26 @@ const SMTP_HOST = String(process.env.SMTP_HOST || "smtp.gmail.com").trim();
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const SMTP_USER = String(process.env.SMTP_USER || "").trim();
 const SMTP_PASS = String(process.env.SMTP_PASS || "").replace(/\s/g, "");
+const MYSQL_HOST = String(process.env.MYSQL_HOST || "").trim();
+const MYSQL_PORT = Number(process.env.MYSQL_PORT || 3306);
+const MYSQL_DATABASE = String(process.env.MYSQL_DATABASE || "").trim();
+const MYSQL_USER = String(process.env.MYSQL_USER || "").trim();
+const MYSQL_PASSWORD = String(process.env.MYSQL_PASSWORD || "");
 
 const neonSql = DATABASE_URL ? neon(DATABASE_URL) : null;
 const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+const mysqlPool = MYSQL_HOST && MYSQL_DATABASE && MYSQL_USER && MYSQL_PASSWORD
+  ? mysql.createPool({
+      host: MYSQL_HOST,
+      port: MYSQL_PORT,
+      database: MYSQL_DATABASE,
+      user: MYSQL_USER,
+      password: MYSQL_PASSWORD,
+      waitForConnections: true,
+      connectionLimit: 5,
+      enableKeepAlive: true
+    })
+  : null;
 const tables = ["users", "tickets", "settings", "sessions"];
 const tableNames = new Set(tables);
 const dejavuFontsDir = path.join(__dirname, "assets", "fonts");
@@ -34,6 +52,7 @@ const DEFAULT_ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL);
 const DEFAULT_ADMIN_BIRTH_DATE = String(process.env.ADMIN_BIRTH_DATE || "").replace(/\D/g, "");
 let seedDone = false;
 let schemaReady = false;
+let mysqlReadyPromise = null;
 
 function normalizeAppUrl(value) {
   if (!value) return "";
@@ -137,7 +156,7 @@ function isExpiredPendingTicket(ticket) {
 }
 
 function ensureLocalFiles() {
-  if (neonSql || supabase) return;
+  if (mysqlPool || neonSql || supabase) return;
   fs.mkdirSync(DATA_DIR, { recursive: true });
   for (const table of tables) {
     const file = path.join(DATA_DIR, `${table}.json`);
@@ -220,9 +239,109 @@ async function ensureNeonSchema() {
   schemaReady = true;
 }
 
+function parseMysqlData(value) {
+  if (value && typeof value === "object") return value;
+  if (typeof value !== "string") return {};
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+async function ensureMysqlReady() {
+  if (!mysqlPool) return;
+  if (!mysqlReadyPromise) {
+    mysqlReadyPromise = (async () => {
+      for (const table of tables) {
+        await mysqlPool.execute(`
+          create table if not exists \`${table}\` (
+            id varchar(255) primary key,
+            data json not null,
+            updated_at timestamp default current_timestamp on update current_timestamp
+          ) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci
+        `);
+      }
+      await mysqlPool.execute(`
+        create table if not exists migration_meta (
+          id varchar(255) primary key,
+          details json not null,
+          completed_at timestamp default current_timestamp
+        ) engine=InnoDB default charset=utf8mb4 collate=utf8mb4_unicode_ci
+      `);
+
+      if (!neonSql || process.env.MIGRATE_NEON_TO_MYSQL !== "1") return;
+      const [existing] = await mysqlPool.execute(
+        "select id from migration_meta where id = ? limit 1",
+        ["neon-v1"]
+      );
+      if (existing.length) return;
+
+      await ensureNeonSchema();
+      const connection = await mysqlPool.getConnection();
+      const counts = {};
+      try {
+        await connection.beginTransaction();
+        for (const table of ["users", "tickets", "settings"]) {
+          const rows = await neonAll(table);
+          counts[table] = rows.length;
+          for (const row of rows) {
+            await connection.execute(
+              `insert into \`${table}\` (id, data, updated_at) values (?, ?, current_timestamp)
+               on duplicate key update data = values(data), updated_at = current_timestamp`,
+              [row.id, JSON.stringify(row.data || {})]
+            );
+          }
+          const [targetCountRows] = await connection.execute(`select count(*) as total from \`${table}\``);
+          const targetCount = Number(targetCountRows[0]?.total || 0);
+          if (targetCount < rows.length) {
+            throw new Error(`Migração incompleta em ${table}: origem=${rows.length}, destino=${targetCount}`);
+          }
+        }
+        await connection.execute(
+          "insert into migration_meta (id, details) values (?, ?)",
+          ["neon-v1", JSON.stringify({ source: "neon", counts, completedAt: now() })]
+        );
+        await connection.commit();
+        console.log("Migração Neon -> MySQL concluída:", counts);
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    })().catch((error) => {
+      mysqlReadyPromise = null;
+      throw error;
+    });
+  }
+  return mysqlReadyPromise;
+}
+
+async function mysqlAll(table) {
+  await ensureMysqlReady();
+  const [rows] = await mysqlPool.execute(`select id, data from \`${table}\``);
+  return rows.map((row) => ({ id: row.id, ...parseMysqlData(row.data) }));
+}
+
+async function mysqlSave(table, record) {
+  await ensureMysqlReady();
+  await mysqlPool.execute(
+    `insert into \`${table}\` (id, data, updated_at) values (?, ?, current_timestamp)
+     on duplicate key update data = values(data), updated_at = current_timestamp`,
+    [record.id, JSON.stringify(record)]
+  );
+}
+
+async function mysqlDelete(table, idValue) {
+  await ensureMysqlReady();
+  await mysqlPool.execute(`delete from \`${table}\` where id = ?`, [idValue]);
+}
+
 const db = {
   async all(table) {
     assertTable(table);
+    if (mysqlPool) return mysqlAll(table);
     if (neonSql) {
       await ensureNeonSchema();
       const rows = await neonAll(table);
@@ -235,6 +354,10 @@ const db = {
   },
   async save(table, record) {
     assertTable(table);
+    if (mysqlPool) {
+      await mysqlSave(table, record);
+      return record;
+    }
     if (neonSql) {
       await ensureNeonSchema();
       await neonSave(table, record);
@@ -258,6 +381,10 @@ const db = {
     assertTable(table);
     const rows = await this.all(table);
     const remove = rows.filter(predicate);
+    if (mysqlPool) {
+      for (const row of remove) await mysqlDelete(table, row.id);
+      return;
+    }
     if (neonSql) {
       await ensureNeonSchema();
       for (const row of remove) await neonDelete(table, row.id);
@@ -962,7 +1089,10 @@ function serveStatic(req, res, pathname) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, APP_URL);
-    if (url.pathname === "/health") return send(res, 200, { ok: true, storage: neonSql ? "neon" : supabase ? "supabase" : "local" });
+    if (url.pathname === "/health") {
+      if (mysqlPool) await ensureMysqlReady();
+      return send(res, 200, { ok: true, storage: mysqlPool ? "mysql" : neonSql ? "neon" : supabase ? "supabase" : "local" });
+    }
     if (url.pathname.startsWith("/api/")) return api(req, res, url.pathname);
     if (url.pathname === "/webhook/mercadopago") return mercadoPagoWebhook(req, res);
     return serveStatic(req, res, url.pathname);

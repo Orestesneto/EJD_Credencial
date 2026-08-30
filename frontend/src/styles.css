@@ -237,3 +237,67 @@ label { color: var(--navy-deep); font: 600 1rem "Teko", sans-serif; letter-spaci
 .ticket-branding img:last-child { width: 31px; height: 31px; max-width: 31px; max-height: 31px; }
 .ticket-branding i { width: 1px; height: 28px; background: var(--orange); }
 .ticket-modal-branding { margin: -2px 0 4px; }.ticket-modal-branding img { width: 48px; height: 54px; max-width: 48px; max-height: 54px; }.ticket-modal-branding img:last-child { width: 42px; height: 42px; max-width: 42px; max-height: 42px; }.ticket-modal-branding i { height: 38px; }
+
+/* Controles administrativos: inputs globais não devem ampliar radios e checkboxes. */
+.admin-form .toggle { min-width: 0; white-space: normal; }
+.admin-form .toggle input,
+.sale-lot-options input {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+}
+
+@media (max-width: 760px) {
+  .admin-form { width: 100%; min-width: 0; }
+  .sale-lot-options {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+    width: 100%;
+    min-width: 0;
+  }
+  .sale-lot-options label,
+  .admin-form .toggle {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+/* Grade estável do formulário de configuração em desktop e tablet. */
+.admin-form {
+  grid-template-columns: minmax(160px, 180px) minmax(200px, 220px) minmax(320px, 1fr);
+  grid-template-areas:
+    "price social lot"
+    "registration closed closed"
+    "save save save";
+  align-items: end;
+}
+.admin-form > label:nth-of-type(1) { grid-area: price; }
+.admin-form > label:nth-of-type(2) { grid-area: social; }
+.admin-form > .sale-lot-options { grid-area: lot; }
+.admin-form > label:nth-of-type(3) { grid-area: registration; }
+.admin-form > label:nth-of-type(4) { grid-area: closed; }
+.admin-form > button { grid-area: save; width: min(220px, 100%); }
+.admin-form .toggle { align-self: center; overflow-wrap: anywhere; }
+.sale-lot-options { flex-wrap: wrap; }
+.sale-lot-options legend { flex-basis: 100%; }
+
+@media (max-width: 900px) {
+  .admin-form {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "price"
+      "social"
+      "lot"
+      "registration"
+      "closed"
+      "save";
+  }
+  .sale-lot-options {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+}
