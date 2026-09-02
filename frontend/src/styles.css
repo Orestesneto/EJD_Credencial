@@ -123,9 +123,13 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(247, 148, 29
 
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgba(32,16,13,.7); }.modal { width: min(100%,460px); max-height: calc(100vh - 32px); overflow: auto; display: grid; gap: 14px; border-radius: 2px; padding: 22px; }.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.modal h3 { margin: 0; color: var(--navy-deep); font: 600 1.7rem "Teko", sans-serif; }.confirm-modal p { margin: 0; line-height: 1.45; }.lots-modal { width: min(100%,560px); gap: 16px; }.lot-list { display: grid; gap: 12px; }.lot-card { display: grid; gap: 12px; padding: 18px; border: 1px dashed var(--line); background: var(--paper); }.lot-card h4 { margin: 0; color: var(--brick); }.lot-card-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }.lot-status { color: var(--navy-deep); font-weight: 800; }.lot-status.active { color: var(--orange-deep); }.lot-prices strong, .row strong { color: var(--navy-deep); }.pix-qr { width: min(100%,300px); justify-self: center; border: 1px solid var(--line); }.modal-actions { display: flex; gap: 10px; flex-wrap: wrap; }.icon-button { width: 42px; padding: 0; }
 
+.card-payment-modal { width: min(100%,620px); }.card-payment-total { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--line); background: #fbfcfd; }.card-payment-total span { color: var(--muted); font-weight: 700; }.card-payment-total strong { color: var(--brick); font-size: 1.35rem; }.card-payment-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.card-field-wide { grid-column: 1 / -1; }.mp-secure-field { width: 100%; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); background: #fffef9; }.mp-secure-field iframe { min-height: 42px; }.card-security-note { color: var(--muted); font-weight: 700; text-align: center; }
+
 .scanner { display: grid; gap: 12px; margin-bottom: 16px; } #qr-reader { overflow: hidden; border: 1px solid var(--line); }.actions { display: flex; gap: 10px; }.admin-form { grid-template-columns: 180px 220px minmax(260px,1fr) auto; align-items: end; }.sale-lot-options { display: flex; align-items: center; gap: 12px; min-height: 44px; margin: 0; padding: 0; border: 0; }.sale-lot-options legend { width: 100%; margin-bottom: 6px; color: var(--brown); font-weight: 700; }.admin-form .toggle { min-height: 44px; white-space: nowrap; }.table { display: grid; gap: 8px; margin-top: 14px; }.row { display: grid; grid-template-columns: 1.35fr 1fr 1.25fr 1.2fr auto auto; align-items: center; gap: 10px; min-height: 64px; padding: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.38); }.row > div { display: grid; gap: 3px; min-width: 0; }.pill { border-radius: 999px; padding: 6px 10px; font-size: .85rem; font-weight: 800; }.pill.confirmed { color: var(--success); background: #e5f1df; }.pill.pending { color: var(--alert); background: #fff0cc; }.pill.refunded, .pill.charged_back, .pill.in_mediation { color: #8c2441; background: #f9dce2; }.pill.rejected, .pill.cancelled { color: var(--error); background: #fde2dc; }.user-card { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-top: 4px solid var(--navy); }
 
 @media (max-width: 760px) { .auth-shell { display: block; padding: 18px 12px; }.auth-rail { padding: 22px 15px 14px; }.auth-rail::before { width: 270px; height: 270px; }.auth-rail .brand-lockup { flex-direction: row; gap: 10px; }.auth-rail .brand-lockup > i { width: 1px; height: 70px; }.auth-rail .event-brand { flex-direction: row; }.auth-rail .event-brand-icon { width: 85px; height: 85px; }.auth-rail .event-brand-copy { text-align: left; }.auth-rail .event-brand-copy strong { font-size: 1.85rem; }.auth-rail .anniversary-brand svg, .auth-rail .anniversary-brand img { width: 78px; height: 60px; }.auth-rail p { display: none; }.auth-panel { margin: 8px auto 0; padding: 22px; }.auth-panel::after { margin: 22px -22px -22px; }.app-shell { padding: 30px 12px 24px; }.topbar { align-items: center; gap: 8px; }.topbar .brand-lockup > i { display: none; }.topbar .anniversary-brand { display: none; }.topbar strong { font-size: 1.65rem; }.nav-tabs { overflow-x: auto; flex-wrap: nowrap; }.nav-tabs button { white-space: nowrap; }.profile-grid, .stats, .admin-form, .checkout-info { grid-template-columns: 1fr; }.checkout { align-items: stretch; flex-direction: column; }.row { grid-template-columns: 1fr; align-items: start; }.panel { padding: 18px; }.panel::after { margin: 18px -18px -18px; } }
+
+@media (max-width: 600px) { .card-payment-form { grid-template-columns: 1fr; }.card-field-wide { grid-column: auto; }.card-payment-modal { padding: 18px; }.card-payment-form .modal-actions { display: grid; } }
 
 /* Identidade oficial: as duas marcas PNG definem toda a assinatura visual. */
 :root { --navy: #062c62; --navy-deep: #031c42; --brick: #b84132; --brown: #5a351c; --orange: #c9573c; --orange-deep: #9d342b; --paper: #f7f6f2; --paper-dark: #e8e8e5; --line: #d4d7dc; --text: #16233a; --muted: #677286; }
@@ -249,6 +253,8 @@ label { color: var(--navy-deep); font: 600 1rem "Teko", sans-serif; letter-spaci
   padding: 0;
 }
 
+.row { grid-template-columns: 1.35fr 1fr 1.2fr 1.2fr 1.15fr 1fr auto auto; }
+
 @media (max-width: 760px) {
   .admin-form { width: 100%; min-width: 0; }
   .sale-lot-options {
@@ -300,4 +306,86 @@ label { color: var(--navy-deep); font: 600 1rem "Teko", sans-serif; letter-spaci
     grid-template-columns: minmax(0, 1fr);
     align-items: start;
   }
+}
+
+/* Checkout transparente: mantém os campos seguros compactos dentro do modal. */
+.card-payment-modal {
+  width: min(100%, 600px);
+  gap: 16px;
+  padding: 24px;
+  overflow-x: hidden;
+}
+.card-payment-modal .modal-head { align-items: flex-start; }
+.card-payment-heading { display: grid; gap: 5px; }
+.card-payment-heading span { color: var(--muted); font-size: .84rem; font-weight: 650; }
+.card-payment-modal .icon-button { flex: 0 0 44px; width: 44px; min-height: 44px; border-radius: 12px; }
+.card-payment-total { padding: 14px 16px; border-radius: 14px; background: linear-gradient(135deg, #f7fafc, #fff); }
+.card-payment-total strong { font-size: 1.55rem; }
+.card-payment-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 13px 12px; }
+.card-payment-form label { gap: 7px; min-width: 0; font-family: Inter, "Segoe UI", Arial, sans-serif; font-size: .88rem; font-weight: 750; }
+.card-payment-form input,
+.card-payment-form select,
+.mp-secure-field {
+  height: 48px;
+  min-height: 48px;
+  max-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+.mp-secure-field { padding: 0 12px; overflow: hidden; }
+.mp-secure-field:focus-within { border-color: var(--navy); box-shadow: 0 0 0 4px rgba(6,75,126,.12); }
+.mp-secure-field iframe {
+  display: block !important;
+  width: 100% !important;
+  height: 46px !important;
+  min-height: 46px !important;
+  max-height: 46px !important;
+  border: 0 !important;
+}
+.card-payment-form .modal-actions { align-items: stretch; margin-top: 3px; }
+.card-payment-form .modal-actions button { flex: 1 1 180px; min-height: 48px; }
+.card-security-note { display: flex; align-items: center; justify-content: center; min-height: 38px; padding: 9px 12px; border-radius: 10px; background: #eef5f8; line-height: 1.35; }
+
+@media (max-width: 600px) {
+  .modal-backdrop { align-items: center; padding: 10px; }
+  .card-payment-modal { max-height: calc(100dvh - 20px); padding: 18px 16px; border-radius: 20px; }
+  .card-payment-heading span { max-width: 240px; }
+  .card-payment-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 11px 9px; }
+  .card-payment-form .card-field-wide { grid-column: 1 / -1; }
+  .card-payment-form label { font-size: .82rem; }
+  .card-payment-form input,
+  .card-payment-form select,
+  .mp-secure-field { height: 46px; min-height: 46px; max-height: 46px; }
+  .mp-secure-field iframe { height: 44px !important; min-height: 44px !important; max-height: 44px !important; }
+  .card-payment-form .modal-actions { display: grid; grid-template-columns: 1fr; }
+  .card-payment-form .modal-actions button { width: 100%; }
+}
+
+/* Relatório administrativo em formato de cartões no celular. */
+@media (max-width: 760px) {
+  .table { width: 100%; min-width: 0; gap: 12px; }
+  .table .row {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr) !important;
+    align-items: start;
+    gap: 11px;
+    padding: 16px;
+    border-radius: 14px;
+    background: #fff;
+  }
+  .table .row > div {
+    width: 100%;
+    min-width: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .table .row > div:first-child strong { font-size: 1.08rem; line-height: 1.25; }
+  .table .row strong,
+  .table .row small,
+  .table .row span { max-width: 100%; overflow-wrap: anywhere; word-break: normal; }
+  .table .row > .pill { justify-self: start; }
+  .table .row > button { width: 100%; }
 }

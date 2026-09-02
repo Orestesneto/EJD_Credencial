@@ -18,6 +18,7 @@ const DATABASE_URL = normalizeDatabaseUrl(process.env.NEON_DATABASE_URL || proce
 const SUPABASE_URL = normalizeSupabaseUrl(process.env.SUPABASE_URL);
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const MP_TOKEN = process.env.MERCADO_PAGO_ACCESS_TOKEN;
+const MP_PUBLIC_KEY = String(process.env.MERCADO_PAGO_PUBLIC_KEY || "").trim();
 const SMTP_HOST = String(process.env.SMTP_HOST || "smtp.gmail.com").trim();
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const SMTP_USER = String(process.env.SMTP_USER || "").trim();
@@ -45,7 +46,9 @@ const mysqlPool = MYSQL_HOST && MYSQL_DATABASE && MYSQL_USER && MYSQL_PASSWORD
 const tables = ["users", "tickets", "settings", "sessions"];
 const tableNames = new Set(tables);
 const dejavuFontsDir = path.join(__dirname, "assets", "fonts");
-const brandingDir = path.join(__dirname, "frontend", "public", "branding");
+const compiledBrandingDir = path.join(STATIC_DIR, "branding");
+const sourceBrandingDir = path.join(__dirname, "frontend", "public", "branding");
+const brandingDir = fs.existsSync(compiledBrandingDir) ? compiledBrandingDir : sourceBrandingDir;
 const ticketFontRegular = opentype.loadSync(path.join(dejavuFontsDir, "DejaVuSans.ttf"));
 const ticketFontBold = opentype.loadSync(path.join(dejavuFontsDir, "DejaVuSans-Bold.ttf"));
 const DEFAULT_ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL);
@@ -133,6 +136,8 @@ function hash(value) {
 
 const mercadoPagoWaitingStatuses = new Set(["pending", "in_process", "authorized"]);
 const mercadoPagoFinalUnpaidStatuses = new Set(["rejected", "cancelled", "refunded", "charged_back", "in_mediation"]);
+const mercadoPagoKnownStatuses = new Set(["approved", ...mercadoPagoWaitingStatuses, ...mercadoPagoFinalUnpaidStatuses]);
+const mercadoPagoPaymentLocks = new Map();
 const ticketTypeDiscounts = {
   inteiro: 0,
   meia: 0.5
@@ -152,7 +157,27 @@ function isTicketPaid(ticket) {
 }
 
 function isExpiredPendingTicket(ticket) {
-  return ticket.status === "pending" && isMercadoPagoWaiting(ticket) && ticket.createdAt && Date.now() - new Date(ticket.createdAt).getTime() > 1000 * 60 * 60;
+  if (ticket.status !== "pending" || !isMercadoPagoWaiting(ticket)) return false;
+  const expiration = ticket.paymentExpiresAt
+    ? new Date(ticket.paymentExpiresAt).getTime()
+    : ticket.createdAt
+      ? new Date(ticket.createdAt).getTime() + 1000 * 60 * 60
+      : Number.NaN;
+  return Number.isFinite(expiration) && Date.now() > expiration;
+}
+
+function webhookLog(message, details = {}) {
+  console.log("[Mercado Pago webhook]", message, details);
+}
+
+function withMercadoPagoPaymentLock(paymentId, operation) {
+  const key = String(paymentId);
+  const previous = mercadoPagoPaymentLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  mercadoPagoPaymentLocks.set(key, current);
+  return current.finally(() => {
+    if (mercadoPagoPaymentLocks.get(key) === current) mercadoPagoPaymentLocks.delete(key);
+  });
 }
 
 function ensureLocalFiles() {
@@ -659,54 +684,109 @@ function mercadoPagoErrorMessage(data, fallback) {
   return details || data?.message || data?.error || fallback;
 }
 
+async function fetchMercadoPagoPayment(paymentId) {
+  if (!MP_TOKEN) throw new Error("MERCADO_PAGO_ACCESS_TOKEN não configurado.");
+  const normalizedPaymentId = String(paymentId || "").trim();
+  if (!/^\d+$/.test(normalizedPaymentId)) throw new Error("payment_id inválido.");
+
+  const response = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(normalizedPaymentId)}`, {
+    headers: { Authorization: `Bearer ${MP_TOKEN}` }
+  });
+  const payment = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(mercadoPagoErrorMessage(payment, `Falha ao consultar pagamento ${normalizedPaymentId}.`));
+    error.statusCode = response.status;
+    throw error;
+  }
+  return payment;
+}
+
+async function applyMercadoPagoPayment(payment, options = {}) {
+  const paymentId = String(payment?.id || options.paymentId || "").trim();
+  const reference = String(payment?.external_reference || "").trim();
+  const paymentStatus = String(payment?.status || "").trim();
+  if (!paymentId || !paymentStatus) throw new Error("Resposta de pagamento incompleta do Mercado Pago.");
+
+  const storage = options.storage || db;
+  const tickets = await storage.all("tickets");
+  const relatedTickets = tickets.filter((ticket) => (
+    String(ticket.paymentId || "") === paymentId
+    || (reference && (String(ticket.orderId || "") === reference || String(ticket.id || "") === reference))
+  ));
+  const statusUpdatedAt = now();
+  let updatedCount = 0;
+  let newlyApprovedCount = 0;
+
+  for (const ticket of relatedTickets) {
+    const wasPaid = isTicketPaid(ticket);
+    const wasManuallyConfirmed = ticket.mercadoPagoStatus === "manual" && ticket.status === "confirmed";
+
+    ticket.paymentId = paymentId;
+    ticket.mercadoPagoStatusDetail = payment.status_detail || null;
+    ticket.mercadoPagoStatusUpdatedAt = statusUpdatedAt;
+
+    if (paymentStatus === "approved") {
+      ticket.mercadoPagoStatus = "approved";
+      ticket.status = "confirmed";
+      ticket.confirmedAt = payment.date_approved || ticket.confirmedAt || statusUpdatedAt;
+      ticket.paidAt = payment.date_approved || ticket.paidAt || ticket.confirmedAt;
+      ticket.manualConfirmedBy = null;
+      ticket.manualConfirmedByName = null;
+      if (!wasPaid) newlyApprovedCount += 1;
+    } else if (wasManuallyConfirmed) {
+      // Uma atualização automática não deve desfazer uma baixa manual existente.
+      ticket.mercadoPagoStatus = "manual";
+    } else {
+      ticket.mercadoPagoStatus = paymentStatus;
+      ticket.status = "pending";
+      ticket.confirmedAt = null;
+      ticket.paidAt = null;
+    }
+
+    ticket.updatedAt = statusUpdatedAt;
+    await storage.save("tickets", ticket);
+    updatedCount += 1;
+  }
+
+  let emailResult = { skipped: true };
+  const hasUnsentApprovedTickets = relatedTickets.some((ticket) => isTicketPaid(ticket) && !ticket.emailSentAt);
+  if (paymentStatus === "approved" && hasUnsentApprovedTickets && options.sendEmail !== false) {
+    const emailSender = options.emailSender || trySendPurchasedTicketsEmail;
+    emailResult = await emailSender(relatedTickets);
+  }
+
+  return { paymentId, reference, paymentStatus, relatedTickets, updatedCount, newlyApprovedCount, emailResult };
+}
+
+async function synchronizeMercadoPagoPayment(paymentId, options = {}) {
+  return withMercadoPagoPaymentLock(paymentId, async () => {
+    const payment = await fetchMercadoPagoPayment(paymentId);
+    return applyMercadoPagoPayment(payment, { ...options, paymentId });
+  });
+}
+
+async function synchronizeWaitingTickets(tickets) {
+  if (!MP_TOKEN) return;
+  const paymentIds = [...new Set(tickets
+    .filter((ticket) => isMercadoPagoWaiting(ticket) && ticket.paymentId)
+    .map((ticket) => String(ticket.paymentId)))];
+
+  for (const paymentId of paymentIds) {
+    try {
+      await synchronizeMercadoPagoPayment(paymentId, { sendEmail: false });
+    } catch (error) {
+      console.warn(`[Mercado Pago] Não foi possível sincronizar o pagamento ${paymentId}: ${error.message}`);
+    }
+  }
+}
+
 function mercadoPagoPayerEmail(user) {
   return normalizeEmail(user?.email);
 }
 
-async function createMercadoPagoPreference(user, orderId, quantity, unitPrice) {
+async function createMercadoPagoPixPayment(user, orderId, quantity, total) {
   if (!MP_TOKEN) return null;
-  const response = await fetch("https://api.mercadopago.com/checkout/preferences", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${MP_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      external_reference: orderId,
-      notification_url: `${APP_URL}/webhook/mercadopago`,
-      items: [
-        {
-          title: "Ingresso - Encontrão 25 Anos",
-          quantity,
-          unit_price: Number(unitPrice),
-          currency_id: "BRL"
-        }
-      ],
-      payer: {
-        name: user.name,
-        email: mercadoPagoPayerEmail(user),
-        phone: { number: user.whatsapp }
-      },
-      payment_methods: {
-        excluded_payment_types: [],
-        installments: 3
-      },
-      back_urls: {
-        success: `${APP_URL}/`,
-        pending: `${APP_URL}/`,
-        failure: `${APP_URL}/`
-      },
-      auto_return: "approved"
-    })
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(mercadoPagoErrorMessage(data, "Falha ao criar pagamento."));
-  return data;
-}
-
-async function createMercadoPagoPixPayment(user, orderId, quantity, unitPrice) {
-  if (!MP_TOKEN) return null;
-  const total = Number((Number(unitPrice) * Number(quantity)).toFixed(2));
+  const transactionAmount = Number(Number(total).toFixed(2));
   const response = await fetch("https://api.mercadopago.com/v1/payments", {
     method: "POST",
     headers: {
@@ -715,7 +795,7 @@ async function createMercadoPagoPixPayment(user, orderId, quantity, unitPrice) {
       "X-Idempotency-Key": orderId
     },
     body: JSON.stringify({
-      transaction_amount: total,
+      transaction_amount: transactionAmount,
       description: `${quantity} ingresso(s) - Encontrão 25 Anos`,
       payment_method_id: "pix",
       external_reference: orderId,
@@ -732,10 +812,85 @@ async function createMercadoPagoPixPayment(user, orderId, quantity, unitPrice) {
   return {
     id: String(data.id),
     status: data.status,
+    statusDetail: data.status_detail || null,
+    dateApproved: data.date_approved || null,
+    expiresAt: data.date_of_expiration || null,
     qrCode: transactionData.qr_code,
     qrCodeBase64: transactionData.qr_code_base64,
     ticketUrl: transactionData.ticket_url
   };
+}
+
+async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, ticketItems) {
+  if (!MP_TOKEN) return null;
+  const token = String(cardPayment?.token || "").trim();
+  const paymentMethodId = String(cardPayment?.paymentMethodId || "").trim();
+  const issuerId = String(cardPayment?.issuerId || "").trim();
+  const installments = Math.min(Math.max(Number.parseInt(cardPayment?.installments, 10) || 1, 1), 3);
+  const payerEmail = normalizeEmail(cardPayment?.payer?.email || user.email);
+  const identificationType = String(cardPayment?.payer?.identification?.type || "CPF").trim();
+  const identificationNumber = cleanDigits(cardPayment?.payer?.identification?.number);
+  const deviceId = String(cardPayment?.deviceId || "").trim().slice(0, 256);
+  if (!token || !paymentMethodId || !isValidEmail(payerEmail) || !identificationNumber) {
+    throw new Error("Confira os dados do cartão e do titular.");
+  }
+
+  const nameParts = String(user.name || "").trim().split(/\s+/).filter(Boolean);
+  const firstName = nameParts.shift() || "Comprador";
+  const lastName = nameParts.join(" ");
+  const phoneDigits = cleanDigits(user.whatsapp);
+  const areaCode = phoneDigits.length >= 10 ? phoneDigits.slice(0, 2) : "";
+  const phoneNumber = phoneDigits.length >= 10 ? phoneDigits.slice(2) : phoneDigits;
+  const additionalItems = (Array.isArray(ticketItems) ? ticketItems : []).map((item) => ({
+    id: `ingresso-${item.ticketType}`,
+    title: `Ingresso ${item.ticketType} - Encontrão 25 Anos`,
+    description: "Ingresso para evento presencial",
+    category_id: "tickets",
+    quantity: Number(item.quantity),
+    unit_price: Number(item.unitPrice)
+  }));
+
+  const response = await fetch("https://api.mercadopago.com/v1/payments", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${MP_TOKEN}`,
+      "Content-Type": "application/json",
+      "X-Idempotency-Key": orderId,
+      ...(deviceId ? { "X-meli-session-id": deviceId } : {})
+    },
+    body: JSON.stringify({
+      transaction_amount: Number(total),
+      token,
+      description: "Ingresso - Encontrão 25 Anos",
+      installments,
+      payment_method_id: paymentMethodId,
+      ...(issuerId ? { issuer_id: issuerId } : {}),
+      external_reference: orderId,
+      notification_url: `${APP_URL}/webhook/mercadopago`,
+      payer: {
+        email: payerEmail,
+        first_name: firstName,
+        ...(lastName ? { last_name: lastName } : {}),
+        ...(phoneNumber ? { phone: { area_code: areaCode, number: phoneNumber } } : {}),
+        identification: {
+          type: identificationType,
+          number: identificationNumber
+        }
+      },
+      additional_info: {
+        ...(additionalItems.length ? { items: additionalItems } : {}),
+        payer: {
+          first_name: firstName,
+          ...(lastName ? { last_name: lastName } : {}),
+          ...(phoneNumber ? { phone: { area_code: areaCode, number: phoneNumber } } : {}),
+          ...(user.createdAt ? { registration_date: user.createdAt } : {})
+        }
+      }
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(mercadoPagoErrorMessage(data, "Falha ao processar o cartão."));
+  return data;
 }
 
 async function api(req, res, pathname) {
@@ -753,6 +908,7 @@ async function api(req, res, pathname) {
         ticketSalesClosed: Boolean(settings?.ticketSalesClosed)
       },
       paymentConfigured: Boolean(MP_TOKEN),
+      mercadoPagoPublicKey: MP_PUBLIC_KEY,
       ticketEmailConfigured: Boolean(SMTP_USER && SMTP_PASS)
     });
   }
@@ -800,6 +956,8 @@ async function api(req, res, pathname) {
 
   if (pathname === "/api/me" && req.method === "GET") {
     if (!auth) return send(res, 401, { message: "Sessão inválida." });
+    const userTickets = (await db.all("tickets")).filter((ticket) => ticket.userId === auth.user.id);
+    await synchronizeWaitingTickets(userTickets);
     const tickets = (await db.all("tickets")).filter((ticket) => ticket.userId === auth.user.id && !isExpiredPendingTicket(ticket));
     await trySendPurchasedTicketsEmail(tickets);
     const withQr = await Promise.all(tickets.map(ticketWithQr));
@@ -856,7 +1014,6 @@ async function api(req, res, pathname) {
     const serviceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
     const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
     const total = Number((subtotal + serviceFee).toFixed(2));
-    const paymentUnitPrice = Number((total / quantity).toFixed(2));
     const orderId = id("ord");
     const usedCodes = new Set((await db.all("tickets")).map((ticket) => ticket.code));
     const tickets = ticketItems.flatMap((item) => Array.from({ length: item.quantity }, () => ({
@@ -880,28 +1037,46 @@ async function api(req, res, pathname) {
       updatedAt: now()
     })));
     let pix = null;
-    let preference = null;
+    let cardPayment = null;
     try {
       if (paymentMethod === "pix") {
-        pix = await createMercadoPagoPixPayment(auth.user, orderId, quantity, paymentUnitPrice);
+        pix = await createMercadoPagoPixPayment(auth.user, orderId, quantity, total);
         if (!pix) return send(res, 400, { message: "Mercado Pago nao configurado para gerar Pix." });
         if (pix) {
-          for (const ticket of tickets) ticket.paymentId = pix.id;
+          for (const ticket of tickets) {
+            ticket.paymentId = pix.id;
+            ticket.mercadoPagoStatus = pix.status || "pending";
+            ticket.mercadoPagoStatusDetail = pix.statusDetail;
+            ticket.mercadoPagoStatusUpdatedAt = now();
+            ticket.paymentExpiresAt = pix.expiresAt;
+            if (pix.status === "approved") {
+              ticket.status = "confirmed";
+              ticket.confirmedAt = pix.dateApproved || now();
+              ticket.paidAt = ticket.confirmedAt;
+            }
+          }
         }
       } else {
-        preference = await createMercadoPagoPreference(auth.user, orderId, quantity, paymentUnitPrice);
+        cardPayment = await createMercadoPagoCardPayment(auth.user, orderId, total, body.cardPayment, ticketItems);
       }
     } catch (error) {
       return send(res, 502, { message: error.message || "Falha ao solicitar pagamento no Mercado Pago." });
     }
-    if (preference) {
+    if (cardPayment) {
       for (const ticket of tickets) {
-        ticket.paymentPreferenceId = preference.id;
-        ticket.paymentUrl = preference.init_point || preference.sandbox_init_point;
-        ticket.mercadoPagoStatus = "pending";
+        ticket.paymentId = String(cardPayment.id);
+        ticket.mercadoPagoStatus = cardPayment.status;
+        ticket.mercadoPagoStatusDetail = cardPayment.status_detail || null;
+        ticket.mercadoPagoStatusUpdatedAt = now();
+        if (cardPayment.status === "approved") {
+          ticket.status = "confirmed";
+          ticket.confirmedAt = cardPayment.date_approved || now();
+          ticket.paidAt = ticket.confirmedAt;
+        }
       }
     }
     for (const ticket of tickets) await db.save("tickets", ticket);
+    if (cardPayment?.status === "approved" || pix?.status === "approved") await trySendPurchasedTicketsEmail(tickets);
     return send(res, 201, {
       tickets,
       quantity,
@@ -911,8 +1086,12 @@ async function api(req, res, pathname) {
       items: ticketItems,
       paymentMethod,
       pix,
-      paymentUrl: tickets[0]?.paymentUrl,
-      message: preference || pix ? "Pagamento criado." : "Pagamento aguardando configuração do Mercado Pago."
+      cardPayment: cardPayment ? {
+        id: String(cardPayment.id),
+        status: cardPayment.status,
+        statusDetail: cardPayment.status_detail || null
+      } : null,
+      message: cardPayment || pix ? "Pagamento criado." : "Pagamento aguardando configuração do Mercado Pago."
     });
   }
 
@@ -946,10 +1125,75 @@ async function api(req, res, pathname) {
     const tickets = (await db.all("tickets")).filter((ticket) => !isExpiredPendingTicket(ticket));
     const users = await db.all("users");
     const usersById = new Map(users.map((user) => [user.id, publicUser(user)]));
+    const purchasesByOrder = tickets.reduce((purchases, ticket) => {
+      const orderKey = ticket.orderId || ticket.id;
+      const purchase = purchases.get(orderKey) || { quantity: 0, paidTotal: 0 };
+      purchase.quantity += 1;
+      if (isTicketPaid(ticket)) {
+        purchase.paidTotal += Number(ticket.price || 0) + Number(ticket.serviceFee || 0);
+      }
+      purchases.set(orderKey, purchase);
+      return purchases;
+    }, new Map());
     const enrichedTickets = tickets.map((ticket) => ({
       ...ticket,
-      manualConfirmedByName: ticket.manualConfirmedBy ? usersById.get(ticket.manualConfirmedBy)?.name || "Usuário removido" : null
-    }));
+      manualConfirmedByName: ticket.manualConfirmedBy ? usersById.get(ticket.manualConfirmedBy)?.name || "Usuário removido" : null,
+      purchaseQuantity: purchasesByOrder.get(ticket.orderId || ticket.id)?.quantity || 1,
+      purchasePaidTotal: Number((purchasesByOrder.get(ticket.orderId || ticket.id)?.paidTotal || 0).toFixed(2))
+    })).sort((first, second) => {
+      const firstPaidAt = first.paidAt || first.confirmedAt;
+      const secondPaidAt = second.paidAt || second.confirmedAt;
+
+      if (!firstPaidAt && !secondPaidAt) return 0;
+      if (!firstPaidAt) return 1;
+      if (!secondPaidAt) return -1;
+
+      return new Date(secondPaidAt).getTime() - new Date(firstPaidAt).getTime();
+    });
+    const ticketGroups = enrichedTickets.reduce((groups, ticket) => {
+      const personKey = ticket.userId || String(ticket.participantWhatsapp || "").replace(/\D/g, "") || ticket.id;
+      const group = groups.get(personKey) || [];
+      group.push(ticket);
+      groups.set(personKey, group);
+      return groups;
+    }, new Map());
+    const groupedTickets = [...ticketGroups.values()].map((personTickets) => {
+      const byActivity = [...personTickets].sort((first, second) => {
+        const firstAt = first.mercadoPagoStatusUpdatedAt || first.updatedAt || first.createdAt;
+        const secondAt = second.mercadoPagoStatusUpdatedAt || second.updatedAt || second.createdAt;
+        return new Date(secondAt || 0).getTime() - new Date(firstAt || 0).getTime();
+      });
+      const latestTicket = byActivity[0];
+      const paidPersonTickets = personTickets.filter(isTicketPaid);
+      const latestPaidTicket = byActivity.find(isTicketPaid);
+      const rejectedPayments = [...byActivity.reduce((payments, ticket) => {
+        if (ticket.mercadoPagoStatus !== "rejected") return payments;
+        const paymentKey = ticket.orderId || ticket.paymentId || ticket.id;
+        if (!payments.has(paymentKey)) payments.set(paymentKey, ticket);
+        return payments;
+      }, new Map()).values()];
+      const latestRejectedTicket = rejectedPayments[0];
+
+      return {
+        ...latestTicket,
+        paidAt: latestPaidTicket?.paidAt || latestPaidTicket?.confirmedAt || null,
+        confirmedAt: latestPaidTicket?.confirmedAt || null,
+        manualConfirmedByName: latestPaidTicket?.manualConfirmedByName || null,
+        purchaseQuantity: paidPersonTickets.length,
+        purchasePaidTotal: Number(paidPersonTickets.reduce((total, ticket) => (
+          total + Number(ticket.price || 0) + Number(ticket.serviceFee || 0)
+        ), 0).toFixed(2)),
+        hasPaidTickets: paidPersonTickets.length > 0,
+        rejectedAt: latestRejectedTicket?.mercadoPagoStatusUpdatedAt || latestRejectedTicket?.updatedAt || null,
+        rejectedCount: rejectedPayments.length,
+        latestRejectedTicketId: latestRejectedTicket?.id || null,
+        checkinCount: paidPersonTickets.filter((ticket) => ticket.checkinAt).length
+      };
+    }).sort((first, second) => {
+      const firstAt = first.paidAt || first.rejectedAt || first.updatedAt || first.createdAt;
+      const secondAt = second.paidAt || second.rejectedAt || second.updatedAt || second.createdAt;
+      return new Date(secondAt || 0).getTime() - new Date(firstAt || 0).getTime();
+    });
     const paidTickets = tickets.filter(isTicketPaid);
     const soldByType = paidTickets.reduce((totals, ticket) => {
       const ticketType = ticket.ticketType || "inteiro";
@@ -964,7 +1208,7 @@ async function api(req, res, pathname) {
       users: users.length,
       soldByType,
       receivedTotal,
-      tickets: enrichedTickets
+      tickets: groupedTickets
     });
   }
 
@@ -1025,38 +1269,72 @@ async function api(req, res, pathname) {
   return send(res, 404, { message: "Rota não encontrada." });
 }
 
-async function mercadoPagoWebhook(req, res) {
+function extractMercadoPagoPaymentId(body, url) {
+  const resource = String(body?.resource || url.searchParams.get("resource") || "");
+  const resourceMatch = resource.match(/\/payments\/(\d+)(?:\?.*)?$/);
+  const candidates = [
+    body?.data?.id,
+    body?.payment_id,
+    body?.id,
+    url.searchParams.get("data.id"),
+    url.searchParams.get("payment_id"),
+    url.searchParams.get("id"),
+    resourceMatch?.[1]
+  ];
+  const paymentId = candidates.find((candidate) => /^\d+$/.test(String(candidate || "").trim()));
+  return paymentId ? String(paymentId).trim() : "";
+}
+
+async function mercadoPagoWebhook(req, res, url) {
+  if (req.method !== "POST") return send(res, 405, { ok: false, message: "Método não permitido." }, { Allow: "POST" });
   await ensureSeed();
-  const body = await parseBody(req).catch(() => ({}));
-  const paymentId = body?.data?.id || body?.id;
-  if (!paymentId || !MP_TOKEN) return send(res, 200, { ok: true });
-  const response = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
-    headers: { Authorization: `Bearer ${MP_TOKEN}` }
+
+  const body = await parseBody(req).catch((error) => {
+    webhookLog("corpo inválido", { error: error.message });
+    return {};
   });
-  const payment = await response.json();
-  const reference = payment.external_reference;
-  if (reference) {
-    const tickets = await db.all("tickets");
-    const orderTickets = tickets.filter((item) => item.orderId === reference || item.id === reference);
-    for (const ticket of orderTickets) {
-      ticket.mercadoPagoStatus = payment.status;
-      ticket.mercadoPagoStatusDetail = payment.status_detail || null;
-      ticket.mercadoPagoStatusUpdatedAt = now();
-      ticket.paymentId = String(paymentId);
-      if (payment.status === "approved") {
-        ticket.status = "confirmed";
-        ticket.confirmedAt = payment.date_approved || now();
-        ticket.paidAt = ticket.confirmedAt;
-        ticket.manualConfirmedBy = null;
-      } else if (mercadoPagoFinalUnpaidStatuses.has(payment.status)) {
-        ticket.status = "pending";
-      }
-      ticket.updatedAt = now();
-      await db.save("tickets", ticket);
-    }
-    if (payment.status === "approved") await trySendPurchasedTicketsEmail(orderTickets);
+  const paymentId = extractMercadoPagoPaymentId(body, url);
+  webhookLog("recebido", {
+    type: body?.type || url.searchParams.get("type") || url.searchParams.get("topic") || null,
+    action: body?.action || null,
+    paymentId: paymentId || null
+  });
+
+  if (!paymentId) {
+    webhookLog("ignorado: payment_id ausente ou inválido");
+    return send(res, 200, { ok: true, ignored: true });
   }
-  return send(res, 200, { ok: true });
+  if (!MP_TOKEN) {
+    console.error("[Mercado Pago webhook] MERCADO_PAGO_ACCESS_TOKEN não configurado.");
+    return send(res, 503, { ok: false, message: "Integração de pagamentos indisponível." });
+  }
+
+  try {
+    webhookLog("consultando pagamento", { paymentId });
+    const result = await synchronizeMercadoPagoPayment(paymentId);
+    webhookLog("pagamento consultado", {
+      paymentId,
+      status: result.paymentStatus,
+      knownStatus: mercadoPagoKnownStatuses.has(result.paymentStatus),
+      externalReference: result.reference || null,
+      ticketsUpdated: result.updatedCount,
+      newlyApproved: result.newlyApprovedCount
+    });
+    webhookLog("resultado do e-mail", {
+      paymentId,
+      sent: Boolean(result.emailResult?.sent),
+      skipped: Boolean(result.emailResult?.skipped),
+      error: result.emailResult?.error || null
+    });
+    return send(res, 200, { ok: true });
+  } catch (error) {
+    console.error("[Mercado Pago webhook] Falha ao processar notificação:", {
+      paymentId,
+      error: error.message,
+      mercadoPagoStatusCode: error.statusCode || null
+    });
+    return send(res, 502, { ok: false, message: "Não foi possível consultar o pagamento." });
+  }
 }
 
 function serveStatic(req, res, pathname) {
@@ -1094,7 +1372,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, storage: mysqlPool ? "mysql" : neonSql ? "neon" : supabase ? "supabase" : "local" });
     }
     if (url.pathname.startsWith("/api/")) return api(req, res, url.pathname);
-    if (url.pathname === "/webhook/mercadopago") return mercadoPagoWebhook(req, res);
+    if (url.pathname === "/webhook/mercadopago") return mercadoPagoWebhook(req, res, url);
     return serveStatic(req, res, url.pathname);
   } catch (error) {
     console.error(error);
@@ -1106,7 +1384,22 @@ if (require.main === module) {
   server.listen(PORT, () => {
     ensureLocalFiles();
     console.log(`EJD - credenciamento em http://localhost:${PORT}`);
+    console.log(`Webhook Mercado Pago: ${APP_URL}/webhook/mercadopago`);
+    if (MP_TOKEN && (!APP_URL.startsWith("https://") || /localhost|127\.0\.0\.1/.test(APP_URL))) {
+      console.warn("Mercado Pago configurado, mas APP_URL não parece ser uma URL HTTPS pública de produção.");
+    }
   });
 }
 
 module.exports = server;
+if (process.env.NODE_ENV === "test") {
+  module.exports.testHelpers = {
+    applyMercadoPagoPayment,
+    extractMercadoPagoPaymentId,
+    mercadoPagoWebhook,
+    db,
+    isExpiredPendingTicket,
+    isMercadoPagoWaiting,
+    isTicketPaid
+  };
+}

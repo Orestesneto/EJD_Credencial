@@ -110,7 +110,15 @@ Em produção, configure a URL pública:
 APP_URL=https://ejd-credenciamento.vercel.app
 ```
 
-O webhook atualiza `mercadoPagoStatus` e `mercadoPagoStatusDetail` nos ingressos.
+O webhook aceita notificações Webhooks e IPN (`data.id`, `payment_id`, `id`, query string ou URL em `resource`), consulta o pagamento diretamente na API do Mercado Pago e somente então atualiza os ingressos. A mesma notificação pode ser reenviada sem criar ingressos ou repetir um e-mail já registrado.
+
+Na Hostinger configurada neste projeto, a URL esperada é:
+
+```text
+https://lightsalmon-tiger-279150.hostingersite.com/webhook/mercadopago
+```
+
+Se o domínio de produção mudar, atualize `APP_URL` no ambiente. Não inclua caminho nem barra final; a aplicação acrescenta `/webhook/mercadopago` automaticamente.
 
 Regras principais:
 
@@ -118,6 +126,7 @@ Regras principais:
 - `manual`: conta como pago quando confirmado manualmente pelo admin.
 - `pending`, `in_process`, `authorized`: ficam aguardando.
 - `rejected`, `cancelled`, `refunded`, `charged_back`, `in_mediation`: não contam como pago.
+- O endpoint `/api/me` reconcilia pagamentos ainda pendentes com a API, servindo como recuperação caso uma entrega do webhook falhe.
 
 ## Publicar Na Vercel
 

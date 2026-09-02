@@ -474,6 +474,8 @@ function BuyTicket({ refresh }) {
   const [ticketQuantities, setTicketQuantities] = useState({ inteiro: 0, meia: 0, social: 0 });
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [pixModal, setPixModal] = useState(null);
+  const [cardModal, setCardModal] = useState(false);
+  const [cardError, setCardError] = useState("");
   const [ticketLotsModal, setTicketLotsModal] = useState(true);
   const [socialTicketModal, setSocialTicketModal] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -516,33 +518,51 @@ function BuyTicket({ refresh }) {
       setSocialTicketModal(true);
       return;
     }
-    checkout();
+    beginCheckout();
   }
 
   function confirmSocialTicket() {
     setSocialTicketModal(false);
+    beginCheckout();
+  }
+
+  function beginCheckout() {
+    if (paymentMethod === "credit_card") {
+      setCardError("");
+      setCardModal(true);
+      return;
+    }
     checkout();
   }
 
-  async function checkout() {
+  async function checkout(cardPayment = null) {
     setLoading(true);
     setNotice(null);
+    setCardError("");
     try {
       const data = await api("/api/tickets/checkout", {
         method: "POST",
-        body: JSON.stringify({ items: ticketQuantities, paymentMethod })
+        body: JSON.stringify({ items: ticketQuantities, paymentMethod, cardPayment })
       });
       await refresh();
       if (data.pix?.qrCode) {
         setPixModal(data.pix);
         setNotice({ type: "success", text: "Pix gerado. Aguarde a confirmação do pagamento." });
-      } else if (data.paymentUrl) {
-        window.location.href = data.paymentUrl;
+      } else if (data.cardPayment) {
+        setCardModal(false);
+        const detail = paymentStatusDetailLabel(data.cardPayment.statusDetail);
+        setNotice({
+          type: data.cardPayment.status === "approved" ? "success" : "alert",
+          text: data.cardPayment.status === "approved"
+            ? "Pagamento aprovado. Seus ingressos já estão disponíveis."
+            : `Pagamento ${paymentStatusLabel(data.cardPayment.status).toLowerCase()}${detail ? `: ${detail}` : "."}`
+        });
       } else {
         setNotice({ type: "alert", text: `${data.quantity || quantity} ingresso(s) criado(s). Aguarde a confirmação do pagamento.` });
       }
     } catch (error) {
-      setNotice({ type: "error", text: error.message });
+      if (cardPayment) setCardError(error.message);
+      else setNotice({ type: "error", text: error.message });
     } finally {
       setLoading(false);
     }
@@ -612,6 +632,7 @@ function BuyTicket({ refresh }) {
       {ticketLotsModal && <TicketLotsModal currentSaleLot={config?.settings?.currentSaleLot} onClose={() => setTicketLotsModal(false)} />}
       {socialTicketModal && <SocialTicketModal onConfirm={confirmSocialTicket} onClose={() => setSocialTicketModal(false)} />}
       {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} />}
+      {cardModal && <CardPaymentModal publicKey={config?.mercadoPagoPublicKey} total={total} loading={loading} error={cardError} onSubmit={checkout} onClose={() => !loading && setCardModal(false)} />}
     </section>
   );
 }
@@ -696,6 +717,141 @@ function SocialTicketModal({ onConfirm, onClose }) {
         <div className="modal-actions">
           <button className="primary" onClick={onConfirm}>OK</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose }) {
+  const submitRef = useRef(onSubmit);
+  const [sdkError, setSdkError] = useState("");
+
+  useEffect(() => {
+    submitRef.current = onSubmit;
+  }, [onSubmit]);
+
+  useEffect(() => {
+    if (!publicKey) {
+      setSdkError("Configure MERCADO_PAGO_PUBLIC_KEY para aceitar cartão.");
+      return undefined;
+    }
+    if (!window.MercadoPago) {
+      setSdkError("Não foi possível carregar o formulário seguro do Mercado Pago.");
+      return undefined;
+    }
+
+    const mercadoPago = new window.MercadoPago(publicKey, { locale: "pt-BR" });
+    const cardForm = mercadoPago.cardForm({
+      amount: Number(total).toFixed(2),
+      iframe: true,
+      form: {
+        id: "card-payment-form",
+        cardNumber: { id: "card-payment__cardNumber", placeholder: "Número do cartão" },
+        expirationDate: { id: "card-payment__expirationDate", placeholder: "MM/AA" },
+        securityCode: { id: "card-payment__securityCode", placeholder: "CVV" },
+        cardholderName: { id: "card-payment__cardholderName", placeholder: "Nome como está no cartão" },
+        issuer: { id: "card-payment__issuer", placeholder: "Banco emissor" },
+        installments: { id: "card-payment__installments", placeholder: "Parcelas" },
+        identificationType: { id: "card-payment__identificationType", placeholder: "Tipo de documento" },
+        identificationNumber: { id: "card-payment__identificationNumber", placeholder: "CPF do titular" },
+        cardholderEmail: { id: "card-payment__cardholderEmail", placeholder: "E-mail" }
+      },
+      callbacks: {
+        onFormMounted: (mountError) => {
+          if (mountError) setSdkError("Não foi possível abrir os campos seguros do cartão.");
+        },
+        onSubmit: async (event) => {
+          event.preventDefault();
+          setSdkError("");
+          const formData = cardForm.getCardFormData();
+          await submitRef.current({
+            token: formData.token,
+            deviceId: String(window.MP_DEVICE_SESSION_ID || "").trim(),
+            issuerId: formData.issuerId,
+            paymentMethodId: formData.paymentMethodId,
+            installments: Number(formData.installments),
+            payer: {
+              email: formData.cardholderEmail,
+              identification: {
+                type: formData.identificationType,
+                number: formData.identificationNumber
+              }
+            }
+          });
+        },
+        onFetching: () => {
+          setSdkError("");
+        }
+      }
+    });
+
+    return () => {
+      try {
+        cardForm.unmount?.();
+      } catch {
+        // O SDK remove os campos seguros quando o modal sai do DOM.
+      }
+    };
+  }, [publicKey, total]);
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="card-payment-title">
+      <div className="modal card-payment-modal">
+        <div className="modal-head">
+          <div className="card-payment-heading">
+            <h3 id="card-payment-title">Pagamento com cartão</h3>
+            <span>Preencha os dados abaixo para finalizar sua compra</span>
+          </div>
+          <button type="button" className="ghost icon-button" onClick={onClose} disabled={loading} aria-label="Fechar">X</button>
+        </div>
+        <div className="card-payment-total">
+          <span>Total da compra</span>
+          <strong>{formatCurrency(total)}</strong>
+        </div>
+        {(sdkError || error) && <div className="notice error">{sdkError || error}</div>}
+        <form id="card-payment-form" className="card-payment-form">
+          <label className="card-field-wide">
+            Número do cartão
+            <div id="card-payment__cardNumber" className="mp-secure-field" />
+          </label>
+          <label>
+            Validade
+            <div id="card-payment__expirationDate" className="mp-secure-field" />
+          </label>
+          <label>
+            Código de segurança
+            <div id="card-payment__securityCode" className="mp-secure-field" />
+          </label>
+          <label className="card-field-wide">
+            Nome do titular
+            <input id="card-payment__cardholderName" autoComplete="cc-name" />
+          </label>
+          <label>
+            Documento
+            <select id="card-payment__identificationType" />
+          </label>
+          <label>
+            Número do documento
+            <input id="card-payment__identificationNumber" inputMode="numeric" autoComplete="off" />
+          </label>
+          <label>
+            Banco emissor
+            <select id="card-payment__issuer" />
+          </label>
+          <label>
+            Parcelas
+            <select id="card-payment__installments" />
+          </label>
+          <label className="card-field-wide">
+            E-mail
+            <input id="card-payment__cardholderEmail" type="email" autoComplete="email" />
+          </label>
+          <div className="modal-actions card-field-wide">
+            <button type="submit" className="primary" disabled={loading || Boolean(sdkError)}>{loading ? "Processando..." : `Pagar ${formatCurrency(total)}`}</button>
+            <button type="button" className="secondary" onClick={onClose} disabled={loading}>Cancelar</button>
+          </div>
+        </form>
+        <small className="card-security-note">Os dados do cartão são protegidos e tokenizados diretamente pelo Mercado Pago.</small>
       </div>
     </div>
   );
@@ -1156,14 +1312,24 @@ function AdminPanel({ refresh }) {
                     </div>
                     <div>
                       <span>Baixa</span>
-                      <strong>{isTicketPaid(ticket) ? formatDateTime(ticket.paidAt || ticket.confirmedAt) : "Nao se aplica"}</strong>
+                      <strong>{ticket.hasPaidTickets ? formatDateTime(ticket.paidAt || ticket.confirmedAt) : "Nao se aplica"}</strong>
+                    </div>
+                    <div>
+                      <span>Última rejeição</span>
+                      <strong>{ticket.rejectedAt ? formatDateTime(ticket.rejectedAt) : "Nao se aplica"}</strong>
+                      {ticket.rejectedCount > 0 && <small>{ticket.rejectedCount} {ticket.rejectedCount === 1 ? "pagamento rejeitado" : "pagamentos rejeitados"}</small>}
                     </div>
                     <div>
                       <span>Baixa manual por</span>
                       <strong>{ticket.manualConfirmedByName || "Nao se aplica"}</strong>
                     </div>
+                    <div>
+                      <span>Compra</span>
+                      <strong>{ticket.purchaseQuantity} {ticket.purchaseQuantity === 1 ? "ingresso" : "ingressos"}</strong>
+                      <small>Valor pago: {ticket.hasPaidTickets ? formatCurrency(ticket.purchasePaidTotal) : "Nao se aplica"}</small>
+                    </div>
                     <span className={`pill ${pill.className}`}>{pill.label}</span>
-                    {isTicketPaid(ticket) ? <span>{ticket.checkinAt ? "Presente" : "Nao presente"}</span> : <button className="mini" onClick={() => confirmTicket(ticket.id)}>Confirmar</button>}
+                    {ticket.hasPaidTickets ? <span>{ticket.checkinCount > 0 ? "Presente" : "Nao presente"}</span> : <button className="mini" onClick={() => confirmTicket(ticket.latestRejectedTicketId || ticket.id)}>Confirmar</button>}
                   </div>
                 );
               })}
