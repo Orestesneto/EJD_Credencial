@@ -98,6 +98,8 @@ Prioridade de banco:
 
 Configure `MERCADO_PAGO_ACCESS_TOKEN` para habilitar pagamentos.
 
+As chamadas ao Mercado Pago usam timeout controlado de 12 segundos. Esse valor pode ser ajustado entre 5 e 30 segundos com `MERCADO_PAGO_TIMEOUT_MS`.
+
 O sistema usa:
 
 - Pix: criação direta em `/v1/payments`
@@ -111,6 +113,8 @@ APP_URL=https://ejd-credenciamento.vercel.app
 ```
 
 O webhook aceita notificações Webhooks e IPN (`data.id`, `payment_id`, `id`, query string ou URL em `resource`), consulta o pagamento diretamente na API do Mercado Pago e somente então atualiza os ingressos. A mesma notificação pode ser reenviada sem criar ingressos ou repetir um e-mail já registrado.
+
+O checkout envia um `checkoutRequestId` estável. Duplo clique é bloqueado e um retry de rede recupera a cobrança já criada com a mesma `X-Idempotency-Key`, inclusive o mesmo QR Code Pix.
 
 Na Hostinger configurada neste projeto, a URL esperada é:
 

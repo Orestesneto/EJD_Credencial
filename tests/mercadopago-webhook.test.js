@@ -10,6 +10,7 @@ const {
   applyMercadoPagoPayment,
   db,
   extractMercadoPagoPaymentId,
+  mercadoPagoRequest,
   isExpiredPendingTicket,
   isTicketPaid
 } = server.testHelpers;
@@ -262,4 +263,109 @@ test("fluxo HTTP pending → webhook approved → /api/me confirmado", async (t)
   const get = await requestServer("/webhook/mercadopago");
   assert.equal(get.status, 405);
   assert.equal(requested.length, 1);
+});
+
+test("API temporariamente indisponível faz retry e JSON inválido gera erro", async (t) => {
+  const originalFetch = global.fetch;
+  let attempts = 0;
+  global.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return { ok: false, status: 429, async text() { return JSON.stringify({ message: "rate limited" }); } };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify({ id: 1, status: "pending" }); } };
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  const recovered = await mercadoPagoRequest("https://api.mercadopago.com/test", {}, { retries: 1 });
+  assert.equal(recovered.status, "pending");
+  assert.equal(attempts, 2);
+
+  global.fetch = async () => ({ ok: true, status: 200, async text() { return "not-json"; } });
+  await assert.rejects(
+    mercadoPagoRequest("https://api.mercadopago.com/test", {}, { retries: 0 }),
+    /resposta inválida/
+  );
+});
+
+test("duplo checkout usa uma cobrança e retry recupera o mesmo Pix", async (t) => {
+  const originalFetch = global.fetch;
+  const originalDb = { all: db.all, save: db.save, removeWhere: db.removeWhere };
+  const sessionToken = "checkout-session-token";
+  const tables = {
+    users: [{ id: "checkout-user", name: "Cliente Pix", email: "pix@example.com", whatsapp: "83999999999", role: "usuarios" }],
+    settings: [{ id: "event", registrationOpen: true, ticketSalesClosed: false, ticketPrice: 30, socialTicketPrice: 30 }],
+    sessions: [{
+      id: "checkout-session",
+      userId: "checkout-user",
+      tokenHash: crypto.createHash("sha256").update(sessionToken).digest("hex"),
+      expiresAt: "2099-01-01T00:00:00.000Z"
+    }],
+    tickets: []
+  };
+  db.all = async (table) => tables[table].map((row) => ({ ...row }));
+  db.save = async (table, record) => {
+    const index = tables[table].findIndex((row) => row.id === record.id);
+    if (index >= 0) tables[table][index] = { ...record };
+    else tables[table].push({ ...record });
+    return record;
+  };
+  db.removeWhere = async () => {};
+  let createCalls = 0;
+  let createdPayment;
+  global.fetch = async (url, options = {}) => {
+    if (options.method === "POST") {
+      createCalls += 1;
+      const requestBody = JSON.parse(options.body);
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      createdPayment = {
+        id: 3000,
+        status: "pending",
+        status_detail: "pending_waiting_transfer",
+        external_reference: requestBody.external_reference,
+        date_of_expiration: "2099-01-01T00:00:00.000Z",
+        point_of_interaction: { transaction_data: { qr_code: "PIX-CODE", qr_code_base64: "BASE64", ticket_url: "https://example.com/pix" } }
+      };
+      return { ok: true, status: 201, async text() { return JSON.stringify(createdPayment); } };
+    }
+    return { ok: true, status: 200, async text() { return JSON.stringify(createdPayment); } };
+  };
+  t.after(() => {
+    global.fetch = originalFetch;
+    db.all = originalDb.all;
+    db.save = originalDb.save;
+    db.removeWhere = originalDb.removeWhere;
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const checkoutBody = {
+    items: { inteiro: 1 },
+    paymentMethod: "pix",
+    checkoutRequestId: "checkout-request-12345678"
+  };
+  const requestOptions = {
+    method: "POST",
+    headers: { Authorization: `Bearer ${sessionToken}` },
+    body: checkoutBody
+  };
+  const simultaneous = await Promise.all([
+    requestServer("/api/tickets/checkout", requestOptions),
+    requestServer("/api/tickets/checkout", requestOptions)
+  ]);
+  assert.deepEqual(simultaneous.map((result) => result.status).sort(), [201, 409]);
+  assert.equal(createCalls, 1);
+  assert.equal(tables.tickets.length, 1);
+  assert.equal(tables.tickets[0].paymentId, "3000");
+  assert.equal(tables.tickets[0].mercadoPagoStatus, "pending");
+  assert.equal(tables.tickets[0].pixQrCode, "PIX-CODE");
+  assert.equal(tables.tickets[0].pixQrCodeBase64, "BASE64");
+  assert.equal(tables.tickets[0].pixTicketUrl, "https://example.com/pix");
+
+  const retry = await requestServer("/api/tickets/checkout", requestOptions);
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.pix.id, "3000");
+  assert.equal(retry.body.pix.qrCode, "PIX-CODE");
+  assert.equal(createCalls, 1);
+  assert.equal(tables.tickets.length, 1);
 });

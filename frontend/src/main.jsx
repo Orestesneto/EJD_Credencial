@@ -253,6 +253,8 @@ function paymentStatusLabel(value) {
 function paymentStatusDetailLabel(value) {
   const labels = {
     accredited: "Valor creditado",
+    pending_waiting_payment: "Aguardando pagamento",
+    pending_waiting_transfer: "Aguardando transferência Pix",
     pending_contingency: "Aguardando processamento",
     pending_review_manual: "Aguardando revisao manual",
     cc_rejected_bad_filled_card_number: "Cartao preenchido incorretamente",
@@ -470,6 +472,8 @@ async function downloadTicket(ticket) {
 }
 
 function BuyTicket({ refresh }) {
+  const checkoutRequestIdRef = useRef("");
+  const checkoutInFlightRef = useRef(false);
   const [config, setConfig] = useState(null);
   const [ticketQuantities, setTicketQuantities] = useState({ inteiro: 0, meia: 0, social: 0 });
   const [paymentMethod, setPaymentMethod] = useState("pix");
@@ -536,14 +540,25 @@ function BuyTicket({ refresh }) {
   }
 
   async function checkout(cardPayment = null) {
+    if (checkoutInFlightRef.current) return;
+    checkoutInFlightRef.current = true;
+    if (!checkoutRequestIdRef.current) {
+      checkoutRequestIdRef.current = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
     setLoading(true);
     setNotice(null);
     setCardError("");
     try {
       const data = await api("/api/tickets/checkout", {
         method: "POST",
-        body: JSON.stringify({ items: ticketQuantities, paymentMethod, cardPayment })
+        body: JSON.stringify({
+          items: ticketQuantities,
+          paymentMethod,
+          cardPayment,
+          checkoutRequestId: checkoutRequestIdRef.current
+        })
       });
+      checkoutRequestIdRef.current = "";
       await refresh();
       if (data.pix?.qrCode) {
         setPixModal(data.pix);
@@ -564,6 +579,7 @@ function BuyTicket({ refresh }) {
       if (cardPayment) setCardError(error.message);
       else setNotice({ type: "error", text: error.message });
     } finally {
+      checkoutInFlightRef.current = false;
       setLoading(false);
     }
   }

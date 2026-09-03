@@ -28,6 +28,10 @@ const MYSQL_PORT = Number(process.env.MYSQL_PORT || 3306);
 const MYSQL_DATABASE = String(process.env.MYSQL_DATABASE || "").trim();
 const MYSQL_USER = String(process.env.MYSQL_USER || "").trim();
 const MYSQL_PASSWORD = String(process.env.MYSQL_PASSWORD || "");
+const configuredMercadoPagoTimeout = Number(process.env.MERCADO_PAGO_TIMEOUT_MS || 12000);
+const MERCADO_PAGO_TIMEOUT_MS = Number.isFinite(configuredMercadoPagoTimeout)
+  ? Math.min(Math.max(configuredMercadoPagoTimeout, 5000), 30000)
+  : 12000;
 
 const neonSql = DATABASE_URL ? neon(DATABASE_URL) : null;
 const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
@@ -138,6 +142,7 @@ const mercadoPagoWaitingStatuses = new Set(["pending", "in_process", "authorized
 const mercadoPagoFinalUnpaidStatuses = new Set(["rejected", "cancelled", "refunded", "charged_back", "in_mediation"]);
 const mercadoPagoKnownStatuses = new Set(["approved", ...mercadoPagoWaitingStatuses, ...mercadoPagoFinalUnpaidStatuses]);
 const mercadoPagoPaymentLocks = new Map();
+const mercadoPagoCheckoutRequests = new Set();
 const ticketTypeDiscounts = {
   inteiro: 0,
   meia: 0.5
@@ -168,6 +173,10 @@ function isExpiredPendingTicket(ticket) {
 
 function webhookLog(message, details = {}) {
   console.log("[Mercado Pago webhook]", message, details);
+}
+
+function mercadoPagoLog(message, details = {}) {
+  console.log("[Mercado Pago]", message, details);
 }
 
 function withMercadoPagoPaymentLock(paymentId, operation) {
@@ -684,21 +693,64 @@ function mercadoPagoErrorMessage(data, fallback) {
   return details || data?.message || data?.error || fallback;
 }
 
-async function fetchMercadoPagoPayment(paymentId) {
+function isTemporaryMercadoPagoError(statusCode) {
+  return !statusCode || statusCode === 408 || statusCode === 409 || statusCode === 429 || statusCode >= 500;
+}
+
+async function mercadoPagoRequest(url, options = {}, requestOptions = {}) {
+  const retries = Math.max(Number(requestOptions.retries || 0), 0);
+  let lastError;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), MERCADO_PAGO_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      let data;
+      try {
+        if (typeof response.text === "function") {
+          const rawBody = await response.text();
+          data = rawBody ? JSON.parse(rawBody) : {};
+        } else {
+          data = await response.json();
+        }
+      } catch {
+        const invalidJsonError = new Error("O Mercado Pago retornou uma resposta inválida.");
+        invalidJsonError.statusCode = response.status;
+        invalidJsonError.retryable = true;
+        throw invalidJsonError;
+      }
+
+      if (!response.ok) {
+        const requestError = new Error(mercadoPagoErrorMessage(data, `Mercado Pago respondeu HTTP ${response.status}.`));
+        requestError.statusCode = response.status;
+        requestError.retryable = isTemporaryMercadoPagoError(response.status);
+        throw requestError;
+      }
+      return data;
+    } catch (error) {
+      const normalizedError = error.name === "AbortError"
+        ? Object.assign(new Error(`Tempo limite de ${MERCADO_PAGO_TIMEOUT_MS} ms excedido ao consultar o Mercado Pago.`), { retryable: true })
+        : error;
+      if (normalizedError.retryable === undefined && !normalizedError.statusCode) normalizedError.retryable = true;
+      lastError = normalizedError;
+      if (attempt >= retries || !normalizedError.retryable) throw normalizedError;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError;
+}
+
+async function fetchMercadoPagoPayment(paymentId, options = {}) {
   if (!MP_TOKEN) throw new Error("MERCADO_PAGO_ACCESS_TOKEN não configurado.");
   const normalizedPaymentId = String(paymentId || "").trim();
   if (!/^\d+$/.test(normalizedPaymentId)) throw new Error("payment_id inválido.");
 
-  const response = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(normalizedPaymentId)}`, {
+  return mercadoPagoRequest(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(normalizedPaymentId)}`, {
     headers: { Authorization: `Bearer ${MP_TOKEN}` }
-  });
-  const payment = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(mercadoPagoErrorMessage(payment, `Falha ao consultar pagamento ${normalizedPaymentId}.`));
-    error.statusCode = response.status;
-    throw error;
-  }
-  return payment;
+  }, { retries: options.retries === undefined ? 1 : options.retries });
 }
 
 async function applyMercadoPagoPayment(payment, options = {}) {
@@ -724,6 +776,13 @@ async function applyMercadoPagoPayment(payment, options = {}) {
     ticket.paymentId = paymentId;
     ticket.mercadoPagoStatusDetail = payment.status_detail || null;
     ticket.mercadoPagoStatusUpdatedAt = statusUpdatedAt;
+    if (payment.date_of_expiration) ticket.paymentExpiresAt = payment.date_of_expiration;
+    const pixTransactionData = payment.point_of_interaction?.transaction_data;
+    if (pixTransactionData) {
+      if (pixTransactionData.qr_code) ticket.pixQrCode = pixTransactionData.qr_code;
+      if (pixTransactionData.qr_code_base64) ticket.pixQrCodeBase64 = pixTransactionData.qr_code_base64;
+      if (pixTransactionData.ticket_url) ticket.pixTicketUrl = pixTransactionData.ticket_url;
+    }
 
     if (paymentStatus === "approved") {
       ticket.mercadoPagoStatus = "approved";
@@ -739,8 +798,6 @@ async function applyMercadoPagoPayment(payment, options = {}) {
     } else {
       ticket.mercadoPagoStatus = paymentStatus;
       ticket.status = "pending";
-      ticket.confirmedAt = null;
-      ticket.paidAt = null;
     }
 
     ticket.updatedAt = statusUpdatedAt;
@@ -760,8 +817,34 @@ async function applyMercadoPagoPayment(payment, options = {}) {
 
 async function synchronizeMercadoPagoPayment(paymentId, options = {}) {
   return withMercadoPagoPaymentLock(paymentId, async () => {
-    const payment = await fetchMercadoPagoPayment(paymentId);
-    return applyMercadoPagoPayment(payment, { ...options, paymentId });
+    const payment = await fetchMercadoPagoPayment(paymentId, { retries: options.apiRetries });
+    const result = await applyMercadoPagoPayment(payment, { ...options, paymentId });
+    mercadoPagoLog("pagamento sincronizado", {
+      origin: options.origin || "unknown",
+      paymentId: result.paymentId,
+      externalReference: result.reference || null,
+      status: result.paymentStatus,
+      statusDetail: payment.status_detail || null,
+      ticketsUpdated: result.updatedCount
+    });
+    return result;
+  });
+}
+
+async function sendMercadoPagoTicketsEmail(paymentId, ticketIds, origin) {
+  return withMercadoPagoPaymentLock(paymentId, async () => {
+    const idSet = new Set(ticketIds);
+    const latestTickets = (await db.all("tickets")).filter((ticket) => idSet.has(ticket.id));
+    const result = await trySendPurchasedTicketsEmail(latestTickets);
+    mercadoPagoLog("resultado do e-mail", {
+      origin,
+      paymentId: String(paymentId),
+      tickets: latestTickets.length,
+      sent: Boolean(result?.sent),
+      skipped: Boolean(result?.skipped),
+      error: result?.error || null
+    });
+    return result;
   });
 }
 
@@ -773,7 +856,7 @@ async function synchronizeWaitingTickets(tickets) {
 
   for (const paymentId of paymentIds) {
     try {
-      await synchronizeMercadoPagoPayment(paymentId, { sendEmail: false });
+      await synchronizeMercadoPagoPayment(paymentId, { sendEmail: false, origin: "api/me" });
     } catch (error) {
       console.warn(`[Mercado Pago] Não foi possível sincronizar o pagamento ${paymentId}: ${error.message}`);
     }
@@ -784,10 +867,24 @@ function mercadoPagoPayerEmail(user) {
   return normalizeEmail(user?.email);
 }
 
+function mercadoPagoPixResponse(data) {
+  const transactionData = data?.point_of_interaction?.transaction_data || {};
+  return {
+    id: String(data?.id || ""),
+    status: data?.status || "pending",
+    statusDetail: data?.status_detail || null,
+    dateApproved: data?.date_approved || null,
+    expiresAt: data?.date_of_expiration || null,
+    qrCode: transactionData.qr_code,
+    qrCodeBase64: transactionData.qr_code_base64,
+    ticketUrl: transactionData.ticket_url
+  };
+}
+
 async function createMercadoPagoPixPayment(user, orderId, quantity, total) {
   if (!MP_TOKEN) return null;
   const transactionAmount = Number(Number(total).toFixed(2));
-  const response = await fetch("https://api.mercadopago.com/v1/payments", {
+  const data = await mercadoPagoRequest("https://api.mercadopago.com/v1/payments", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${MP_TOKEN}`,
@@ -805,20 +902,8 @@ async function createMercadoPagoPixPayment(user, orderId, quantity, total) {
         first_name: user.name
       }
     })
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(mercadoPagoErrorMessage(data, "Falha ao gerar Pix."));
-  const transactionData = data.point_of_interaction?.transaction_data || {};
-  return {
-    id: String(data.id),
-    status: data.status,
-    statusDetail: data.status_detail || null,
-    dateApproved: data.date_approved || null,
-    expiresAt: data.date_of_expiration || null,
-    qrCode: transactionData.qr_code,
-    qrCodeBase64: transactionData.qr_code_base64,
-    ticketUrl: transactionData.ticket_url
-  };
+  }, { retries: 1 });
+  return mercadoPagoPixResponse(data);
 }
 
 async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, ticketItems) {
@@ -850,7 +935,7 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
     unit_price: Number(item.unitPrice)
   }));
 
-  const response = await fetch("https://api.mercadopago.com/v1/payments", {
+  return mercadoPagoRequest("https://api.mercadopago.com/v1/payments", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${MP_TOKEN}`,
@@ -887,10 +972,7 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
         }
       }
     })
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(mercadoPagoErrorMessage(data, "Falha ao processar o cartão."));
-  return data;
+  }, { retries: 1 });
 }
 
 async function api(req, res, pathname) {
@@ -990,6 +1072,19 @@ async function api(req, res, pathname) {
 
   if (pathname === "/api/tickets/checkout" && req.method === "POST") {
     if (!auth) return send(res, 401, { message: "Sessão inválida." });
+    const checkoutRequestId = String(body.checkoutRequestId || "").trim();
+    if (checkoutRequestId && !/^[A-Za-z0-9_-]{8,100}$/.test(checkoutRequestId)) {
+      return send(res, 400, { message: "Identificador de checkout inválido." });
+    }
+    const checkoutLockKey = checkoutRequestId ? `${auth.user.id}:${checkoutRequestId}` : "";
+    if (checkoutLockKey && mercadoPagoCheckoutRequests.has(checkoutLockKey)) {
+      return send(res, 409, { message: "Este pagamento já está sendo processado. Aguarde e tente atualizar a página." });
+    }
+    if (checkoutLockKey) {
+      mercadoPagoCheckoutRequests.add(checkoutLockKey);
+      res.once("finish", () => mercadoPagoCheckoutRequests.delete(checkoutLockKey));
+      res.once("close", () => mercadoPagoCheckoutRequests.delete(checkoutLockKey));
+    }
     const settings = (await db.all("settings")).find((item) => item.id === "event");
     if (settings.ticketSalesClosed) return send(res, 403, { message: "Venda de ingressos fechada." });
     const paymentMethod = body.paymentMethod === "credit_card" ? "credit_card" : "pix";
@@ -1014,10 +1109,56 @@ async function api(req, res, pathname) {
     const serviceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
     const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
     const total = Number((subtotal + serviceFee).toFixed(2));
-    const orderId = id("ord");
-    const usedCodes = new Set((await db.all("tickets")).map((ticket) => ticket.code));
+    const orderId = checkoutRequestId
+      ? `ord_${hash(`${auth.user.id}:${checkoutRequestId}`).slice(0, 40)}`
+      : id("ord");
+    const allTickets = await db.all("tickets");
+    const existingOrderTickets = allTickets.filter((ticket) => ticket.userId === auth.user.id && ticket.orderId === orderId);
+    if (existingOrderTickets.length) {
+      const existingPaymentId = existingOrderTickets.find((ticket) => ticket.paymentId)?.paymentId;
+      if (!existingPaymentId) return send(res, 409, { message: "Pedido existente ainda sem pagamento. Aguarde e atualize a página." });
+      try {
+        const payment = await fetchMercadoPagoPayment(existingPaymentId);
+        await applyMercadoPagoPayment(payment, { origin: "checkout-retry" });
+        mercadoPagoLog("checkout reutilizado", {
+          origin: "checkout",
+          paymentId: String(payment.id),
+          externalReference: payment.external_reference || orderId,
+          status: payment.status,
+          statusDetail: payment.status_detail || null,
+          ticketsUpdated: existingOrderTickets.length
+        });
+        return send(res, 200, {
+          tickets: existingOrderTickets,
+          quantity,
+          subtotal,
+          serviceFee,
+          total,
+          items: ticketItems,
+          paymentMethod,
+          pix: paymentMethod === "pix" ? mercadoPagoPixResponse(payment) : null,
+          cardPayment: paymentMethod === "credit_card" ? {
+            id: String(payment.id),
+            status: payment.status,
+            statusDetail: payment.status_detail || null
+          } : null,
+          message: "Pagamento existente recuperado."
+        });
+      } catch (error) {
+        console.warn("[Mercado Pago] Falha ao recuperar checkout existente:", {
+          origin: "checkout-retry",
+          paymentId: String(existingPaymentId),
+          error: error.message,
+          statusCode: error.statusCode || null
+        });
+        return send(res, 503, { message: "O pagamento já foi criado, mas ainda não foi possível consultar seu estado. Atualize a página em instantes." });
+      }
+    }
+    const usedCodes = new Set(allTickets.map((ticket) => ticket.code));
     const tickets = ticketItems.flatMap((item) => Array.from({ length: item.quantity }, () => ({
-      id: id("tkt"),
+      id: checkoutRequestId
+        ? `tkt_${hash(`${orderId}:${item.ticketType}:${usedCodes.size}`).slice(0, 40)}`
+        : id("tkt"),
       orderId,
       userId: auth.user.id,
       participantName: auth.user.name,
@@ -1049,6 +1190,9 @@ async function api(req, res, pathname) {
             ticket.mercadoPagoStatusDetail = pix.statusDetail;
             ticket.mercadoPagoStatusUpdatedAt = now();
             ticket.paymentExpiresAt = pix.expiresAt;
+            ticket.pixQrCode = pix.qrCode || null;
+            ticket.pixQrCodeBase64 = pix.qrCodeBase64 || null;
+            ticket.pixTicketUrl = pix.ticketUrl || null;
             if (pix.status === "approved") {
               ticket.status = "confirmed";
               ticket.confirmedAt = pix.dateApproved || now();
@@ -1076,6 +1220,14 @@ async function api(req, res, pathname) {
       }
     }
     for (const ticket of tickets) await db.save("tickets", ticket);
+    mercadoPagoLog("checkout criado", {
+      origin: "checkout",
+      paymentId: String(pix?.id || cardPayment?.id || "") || null,
+      externalReference: orderId,
+      status: pix?.status || cardPayment?.status || null,
+      statusDetail: pix?.statusDetail || cardPayment?.status_detail || null,
+      ticketsUpdated: tickets.length
+    });
     if (cardPayment?.status === "approved" || pix?.status === "approved") await trySendPurchasedTicketsEmail(tickets);
     return send(res, 201, {
       tickets,
@@ -1311,7 +1463,11 @@ async function mercadoPagoWebhook(req, res, url) {
 
   try {
     webhookLog("consultando pagamento", { paymentId });
-    const result = await synchronizeMercadoPagoPayment(paymentId);
+    const result = await synchronizeMercadoPagoPayment(paymentId, {
+      origin: "webhook",
+      sendEmail: false,
+      apiRetries: 0
+    });
     webhookLog("pagamento consultado", {
       paymentId,
       status: result.paymentStatus,
@@ -1320,13 +1476,18 @@ async function mercadoPagoWebhook(req, res, url) {
       ticketsUpdated: result.updatedCount,
       newlyApproved: result.newlyApprovedCount
     });
-    webhookLog("resultado do e-mail", {
-      paymentId,
-      sent: Boolean(result.emailResult?.sent),
-      skipped: Boolean(result.emailResult?.skipped),
-      error: result.emailResult?.error || null
-    });
-    return send(res, 200, { ok: true });
+    send(res, 200, { ok: true });
+    if (result.paymentStatus === "approved" && result.relatedTickets.length) {
+      setImmediate(() => {
+        sendMercadoPagoTicketsEmail(paymentId, result.relatedTickets.map((ticket) => ticket.id), "webhook")
+          .catch((error) => console.error("[Mercado Pago] Falha inesperada na fila de e-mail:", {
+            origin: "webhook",
+            paymentId,
+            error: error.message
+          }));
+      });
+    }
+    return undefined;
   } catch (error) {
     console.error("[Mercado Pago webhook] Falha ao processar notificação:", {
       paymentId,
@@ -1397,6 +1558,7 @@ if (process.env.NODE_ENV === "test") {
     applyMercadoPagoPayment,
     extractMercadoPagoPaymentId,
     mercadoPagoWebhook,
+    mercadoPagoRequest,
     db,
     isExpiredPendingTicket,
     isMercadoPagoWaiting,
