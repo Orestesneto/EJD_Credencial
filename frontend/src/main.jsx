@@ -1503,6 +1503,7 @@ function AdminPanel({ refresh }) {
               <strong>{user.name}</strong>
               <span>{user.whatsapp}</span>
               <span>{user.email || "E-mail não informado"}</span>
+              <span>{user.acquiredTicketCount || 0} {(user.acquiredTicketCount || 0) === 1 ? "ingresso adquirido" : "ingressos adquiridos"}</span>
               <select value={user.role} onChange={(e) => updateRole(user.id, e.target.value)}>
                 <option value="usuarios">usuarios</option>
                 <option value="checkin">Check-in</option>

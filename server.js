@@ -1447,7 +1447,15 @@ async function api(req, res, pathname) {
 
   if (pathname === "/api/admin/users" && req.method === "GET") {
     if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
-    const users = (await db.all("users")).map(publicUser);
+    const ticketCounts = new Map();
+    for (const ticket of await db.all("tickets")) {
+      if (!ticket.userId || !isTicketPaid(ticket)) continue;
+      ticketCounts.set(ticket.userId, (ticketCounts.get(ticket.userId) || 0) + 1);
+    }
+    const users = (await db.all("users")).map((user) => ({
+      ...publicUser(user),
+      acquiredTicketCount: ticketCounts.get(user.id) || 0
+    }));
     return send(res, 200, { users });
   }
 
