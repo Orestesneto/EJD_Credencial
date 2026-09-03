@@ -1274,9 +1274,59 @@ async function api(req, res, pathname) {
 
   if (pathname === "/api/admin/summary" && req.method === "GET") {
     if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
-    const tickets = (await db.all("tickets")).filter((ticket) => !isExpiredPendingTicket(ticket));
+    const allTickets = await db.all("tickets");
+    const tickets = allTickets.filter((ticket) => !isExpiredPendingTicket(ticket));
     const users = await db.all("users");
     const usersById = new Map(users.map((user) => [user.id, publicUser(user)]));
+    const paymentHistoryByPerson = allTickets.reduce((people, ticket) => {
+      const personKey = ticket.userId || String(ticket.participantWhatsapp || "").replace(/\D/g, "") || ticket.id;
+      const orders = people.get(personKey) || new Map();
+      const orderKey = ticket.orderId || ticket.paymentId || ticket.id;
+      const current = orders.get(orderKey) || {
+        orderId: ticket.orderId || null,
+        paymentId: ticket.paymentId || null,
+        paymentMethod: ticket.paymentMethod || null,
+        mercadoPagoStatus: ticket.mercadoPagoStatus || ticket.status || "pending",
+        mercadoPagoStatusDetail: ticket.mercadoPagoStatusDetail || null,
+        createdAt: ticket.createdAt || null,
+        updatedAt: ticket.mercadoPagoStatusUpdatedAt || ticket.updatedAt || ticket.createdAt || null,
+        confirmedAt: ticket.confirmedAt || null,
+        paidAt: ticket.paidAt || null,
+        paymentExpiresAt: ticket.paymentExpiresAt || null,
+        manualConfirmedByName: ticket.manualConfirmedBy ? usersById.get(ticket.manualConfirmedBy)?.name || "Usuário removido" : null,
+        quantity: 0,
+        total: 0,
+        ticketTypes: new Set()
+      };
+      const ticketActivityAt = ticket.mercadoPagoStatusUpdatedAt || ticket.updatedAt || ticket.createdAt;
+      if (new Date(ticketActivityAt || 0).getTime() >= new Date(current.updatedAt || 0).getTime()) {
+        current.paymentId = ticket.paymentId || current.paymentId;
+        current.paymentMethod = ticket.paymentMethod || current.paymentMethod;
+        current.mercadoPagoStatus = ticket.mercadoPagoStatus || ticket.status || current.mercadoPagoStatus;
+        current.mercadoPagoStatusDetail = ticket.mercadoPagoStatusDetail || null;
+        current.updatedAt = ticketActivityAt || current.updatedAt;
+        current.confirmedAt = ticket.confirmedAt || current.confirmedAt;
+        current.paidAt = ticket.paidAt || current.paidAt;
+        current.paymentExpiresAt = ticket.paymentExpiresAt || current.paymentExpiresAt;
+        current.manualConfirmedByName = ticket.manualConfirmedBy
+          ? usersById.get(ticket.manualConfirmedBy)?.name || "Usuário removido"
+          : current.manualConfirmedByName;
+      }
+      current.quantity += 1;
+      current.total += Number(ticket.price || 0) + Number(ticket.serviceFee || 0);
+      current.ticketTypes.add(ticket.ticketType || "inteiro");
+      orders.set(orderKey, current);
+      people.set(personKey, orders);
+      return people;
+    }, new Map());
+    const normalizedPaymentHistoryByPerson = new Map([...paymentHistoryByPerson].map(([personKey, orders]) => [
+      personKey,
+      [...orders.values()].map((attempt) => ({
+        ...attempt,
+        total: Number(attempt.total.toFixed(2)),
+        ticketTypes: [...attempt.ticketTypes]
+      })).sort((first, second) => new Date(second.updatedAt || second.createdAt || 0).getTime() - new Date(first.updatedAt || first.createdAt || 0).getTime())
+    ]));
     const purchasesByOrder = tickets.reduce((purchases, ticket) => {
       const orderKey = ticket.orderId || ticket.id;
       const purchase = purchases.get(orderKey) || { quantity: 0, paidTotal: 0 };
@@ -1339,7 +1389,10 @@ async function api(req, res, pathname) {
         rejectedAt: latestRejectedTicket?.mercadoPagoStatusUpdatedAt || latestRejectedTicket?.updatedAt || null,
         rejectedCount: rejectedPayments.length,
         latestRejectedTicketId: latestRejectedTicket?.id || null,
-        checkinCount: paidPersonTickets.filter((ticket) => ticket.checkinAt).length
+        checkinCount: paidPersonTickets.filter((ticket) => ticket.checkinAt).length,
+        paymentHistory: normalizedPaymentHistoryByPerson.get(
+          latestTicket.userId || String(latestTicket.participantWhatsapp || "").replace(/\D/g, "") || latestTicket.id
+        ) || []
       };
     }).sort((first, second) => {
       const firstAt = first.paidAt || first.rejectedAt || first.updatedAt || first.createdAt;

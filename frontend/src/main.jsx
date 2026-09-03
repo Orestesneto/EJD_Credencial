@@ -1180,12 +1180,82 @@ function CheckinPanel() {
   );
 }
 
+function PaymentHistoryModal({ person, onClose }) {
+  const attempts = person.paymentHistory || [];
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="payment-history-title">
+      <div className="modal payment-history-modal">
+        <div className="modal-head">
+          <div>
+            <h3 id="payment-history-title">Histórico de pagamentos</h3>
+            <strong>{person.participantName}</strong>
+            <small className="payment-history-phone">{person.participantWhatsapp}</small>
+          </div>
+          <button type="button" className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        <div className="payment-history-list">
+          {attempts.length === 0 && <p>Nenhuma tentativa de pagamento encontrada.</p>}
+          {attempts.map((attempt, index) => {
+            const pill = ticketStatusPill(attempt);
+            const statusDetail = paymentStatusDetailLabel(attempt.mercadoPagoStatusDetail);
+            return (
+              <article className="payment-history-item" key={attempt.orderId || attempt.paymentId || index}>
+                <div className="payment-history-item-head">
+                  <div>
+                    <span>Tentativa {attempts.length - index}</span>
+                    <strong>{formatDateTime(attempt.createdAt || attempt.updatedAt)}</strong>
+                  </div>
+                  <span className={`pill ${pill.className}`}>{pill.label}</span>
+                </div>
+                <div className="payment-history-grid">
+                  <div>
+                    <span>Status Mercado Pago</span>
+                    <strong>{paymentStatusLabel(attempt.mercadoPagoStatus)}</strong>
+                    {statusDetail && <small>{statusDetail}</small>}
+                  </div>
+                  <div>
+                    <span>Forma de pagamento</span>
+                    <strong>{attempt.paymentMethod === "credit_card" ? "Cartão de crédito" : attempt.paymentMethod === "pix" ? "Pix" : "Não informado"}</strong>
+                  </div>
+                  <div>
+                    <span>Compra</span>
+                    <strong>{attempt.quantity} {attempt.quantity === 1 ? "ingresso" : "ingressos"}</strong>
+                    <small>{(attempt.ticketTypes || []).map(ticketTypeLabel).join(", ")}</small>
+                  </div>
+                  <div>
+                    <span>Valor</span>
+                    <strong>{formatCurrency(attempt.total)}</strong>
+                  </div>
+                  <div>
+                    <span>Última atualização</span>
+                    <strong>{formatDateTime(attempt.updatedAt)}</strong>
+                  </div>
+                  <div>
+                    <span>Pagamento confirmado</span>
+                    <strong>{attempt.paidAt || attempt.confirmedAt ? formatDateTime(attempt.paidAt || attempt.confirmedAt) : "Não se aplica"}</strong>
+                    {attempt.manualConfirmedByName && <small>Baixa manual por {attempt.manualConfirmedByName}</small>}
+                  </div>
+                </div>
+                <div className="payment-history-identifiers">
+                  <small>Pagamento: {attempt.paymentId || "Não informado"}</small>
+                  <small>Pedido: {attempt.orderId || "Não informado"}</small>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AdminPanel({ refresh }) {
   const [summary, setSummary] = useState(null);
   const [settings, setSettings] = useState(null);
   const [users, setUsers] = useState([]);
   const [notice, setNotice] = useState(null);
   const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
+  const [paymentHistoryPerson, setPaymentHistoryPerson] = useState(null);
 
   async function load() {
     const [config, summaryData, userData] = await Promise.all([
@@ -1318,7 +1388,9 @@ function AdminPanel({ refresh }) {
                 return (
                   <div className="row" key={ticket.id}>
                     <div>
-                      <strong>{ticket.participantName}</strong>
+                      <button type="button" className="participant-history-button" onClick={() => setPaymentHistoryPerson(ticket)}>
+                        {ticket.participantName}
+                      </button>
                       <small>{ticket.participantWhatsapp}</small>
                     </div>
                     <div>
@@ -1375,6 +1447,7 @@ function AdminPanel({ refresh }) {
         </div>
       </section>
       )}
+      {paymentHistoryPerson && <PaymentHistoryModal person={paymentHistoryPerson} onClose={() => setPaymentHistoryPerson(null)} />}
     </>
   );
 }
