@@ -9,12 +9,27 @@ const server = require("../server");
 const {
   applyMercadoPagoPayment,
   createMercadoPagoCardPayment,
+  createUsersWorkbook,
   db,
   extractMercadoPagoPaymentId,
   mercadoPagoRequest,
   isExpiredPendingTicket,
   isTicketPaid
 } = server.testHelpers;
+
+test("planilha separa usuários com e sem ingressos em duas abas", async () => {
+  const workbook = createUsersWorkbook([
+    { name: "Bruna", whatsapp: "83999999999", email: "bruna@example.com", acquiredTicketCount: 0 },
+    { name: "Álvaro", whatsapp: "83888888888", email: "alvaro@example.com", acquiredTicketCount: 2 }
+  ]);
+  const buffer = await workbook.xlsx.writeBuffer();
+  assert.ok(buffer.length > 0);
+  assert.deepEqual(workbook.worksheets.map((worksheet) => worksheet.name), ["Com ingressos", "Sem ingressos"]);
+  assert.equal(workbook.getWorksheet("Com ingressos").getRow(2).getCell(1).value, "Álvaro");
+  assert.equal(workbook.getWorksheet("Com ingressos").getRow(2).getCell(4).value, 2);
+  assert.equal(workbook.getWorksheet("Sem ingressos").getRow(2).getCell(1).value, "Bruna");
+  assert.equal(workbook.getWorksheet("Sem ingressos").columnCount, 3);
+});
 
 function memoryStorage(rows) {
   return {

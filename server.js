@@ -6,6 +6,7 @@ const QRCode = require("qrcode");
 const sharp = require("sharp");
 const nodemailer = require("nodemailer");
 const opentype = require("opentype.js");
+const ExcelJS = require("exceljs");
 const { neon } = require("@neondatabase/serverless");
 const { createClient } = require("@supabase/supabase-js");
 const mysql = require("mysql2/promise");
@@ -493,6 +494,47 @@ function send(res, status, payload, headers = {}) {
     ...headers
   });
   res.end(JSON.stringify(payload));
+}
+
+async function adminUsersWithTicketCounts() {
+  const ticketCounts = new Map();
+  for (const ticket of await db.all("tickets")) {
+    if (!ticket.userId || !isTicketPaid(ticket)) continue;
+    ticketCounts.set(ticket.userId, (ticketCounts.get(ticket.userId) || 0) + 1);
+  }
+  return (await db.all("users")).map((user) => ({
+    ...publicUser(user),
+    acquiredTicketCount: ticketCounts.get(user.id) || 0
+  }));
+}
+
+function addUsersWorksheet(workbook, name, users, includeTicketCount) {
+  const worksheet = workbook.addWorksheet(name);
+  worksheet.columns = [
+    { header: "Nome completo", key: "name", width: 38 },
+    { header: "Número de telefone", key: "whatsapp", width: 22 },
+    { header: "E-mail", key: "email", width: 42 },
+    ...(includeTicketCount ? [{ header: "Quantidade de ingressos", key: "acquiredTicketCount", width: 25 }] : [])
+  ];
+  users.forEach((user) => worksheet.addRow(user));
+  worksheet.views = [{ state: "frozen", ySplit: 1 }];
+  worksheet.autoFilter = { from: "A1", to: includeTicketCount ? "D1" : "C1" };
+  worksheet.getRow(1).eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003D69" } };
+  });
+}
+
+function createUsersWorkbook(users) {
+  const sortedUsers = [...users].sort((first, second) =>
+    String(first.name || "").localeCompare(String(second.name || ""), "pt-BR", { sensitivity: "base" })
+  );
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "EJD - Credenciamento";
+  workbook.created = new Date();
+  addUsersWorksheet(workbook, "Com ingressos", sortedUsers.filter((user) => user.acquiredTicketCount > 0), true);
+  addUsersWorksheet(workbook, "Sem ingressos", sortedUsers.filter((user) => user.acquiredTicketCount === 0), false);
+  return workbook;
 }
 
 function parseBody(req) {
@@ -1447,16 +1489,21 @@ async function api(req, res, pathname) {
 
   if (pathname === "/api/admin/users" && req.method === "GET") {
     if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
-    const ticketCounts = new Map();
-    for (const ticket of await db.all("tickets")) {
-      if (!ticket.userId || !isTicketPaid(ticket)) continue;
-      ticketCounts.set(ticket.userId, (ticketCounts.get(ticket.userId) || 0) + 1);
-    }
-    const users = (await db.all("users")).map((user) => ({
-      ...publicUser(user),
-      acquiredTicketCount: ticketCounts.get(user.id) || 0
-    }));
+    const users = await adminUsersWithTicketCounts();
     return send(res, 200, { users });
+  }
+
+  if (pathname === "/api/admin/users/export" && req.method === "GET") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const workbook = createUsersWorkbook(await adminUsersWithTicketCounts());
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": 'attachment; filename="usuarios-ingressos.xlsx"',
+      "Content-Length": buffer.length,
+      "Cache-Control": "no-store"
+    });
+    return res.end(Buffer.from(buffer));
   }
 
   const roleMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)\/role$/);
@@ -1629,6 +1676,7 @@ module.exports = server;
 if (process.env.NODE_ENV === "test") {
   module.exports.testHelpers = {
     applyMercadoPagoPayment,
+    createUsersWorkbook,
     createMercadoPagoCardPayment,
     extractMercadoPagoPaymentId,
     mercadoPagoWebhook,

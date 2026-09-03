@@ -106,6 +106,8 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(247, 148, 29
 .topbar strong { color: var(--navy-deep); font: 600 2rem/.85 "Teko", sans-serif; letter-spacing: .5px; }
 .nav-tabs { position: sticky; top: 0; z-index: 2; padding: 13px 0; background: rgba(255, 251, 237, .94); border-bottom: 1px solid var(--line); }
 .admin-tabs { margin: 6px 0 12px; }
+.panel-title-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 17px; }
+.panel-title-actions h2 { margin-bottom: 0; }
 .panel { border-radius: 2px; padding: 24px; margin: 16px 0; position: relative; overflow: hidden; }
 .panel::after { margin: 24px -24px -24px; }
 .panel h2 { margin: 0 0 17px; color: var(--navy-deep); font: 600 2rem/.9 "Teko", sans-serif; letter-spacing: .5px; }

@@ -1317,6 +1317,7 @@ function AdminPanel({ refresh }) {
   const [notice, setNotice] = useState(null);
   const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
   const [paymentHistoryPerson, setPaymentHistoryPerson] = useState(null);
+  const [exportingUsers, setExportingUsers] = useState(false);
   const sortedUsers = useMemo(
     () => [...users].sort((first, second) => String(first.name || "").localeCompare(String(second.name || ""), "pt-BR", { sensitivity: "base" })),
     [users]
@@ -1362,6 +1363,33 @@ function AdminPanel({ refresh }) {
       await refresh();
     } catch (error) {
       setNotice({ type: "error", text: error.message });
+    }
+  }
+
+  async function exportUsers() {
+    setExportingUsers(true);
+    try {
+      const token = localStorage.getItem(tokenKey);
+      const response = await fetch("/api/admin/users/export", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || "Não foi possível gerar a planilha.");
+      }
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = "usuarios-ingressos.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setExportingUsers(false);
     }
   }
 
@@ -1496,7 +1524,13 @@ function AdminPanel({ refresh }) {
 
       {activeAdminTab === "permissions" && (
       <section className="panel">
-        <h2>Permissões de usuários</h2>
+        <div className="panel-title-actions">
+          <h2>Permissões de usuários</h2>
+          <button type="button" className="secondary" onClick={exportUsers} disabled={exportingUsers}>
+            {exportingUsers ? "Gerando planilha..." : "Baixar planilha Excel"}
+          </button>
+        </div>
+        <Notice notice={notice} />
         <div className="user-cards">
           {sortedUsers.map((user) => (
             <article className="user-card" key={user.id}>
