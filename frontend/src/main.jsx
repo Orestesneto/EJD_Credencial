@@ -1317,6 +1317,10 @@ function AdminPanel({ refresh }) {
   const [notice, setNotice] = useState(null);
   const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
   const [paymentHistoryPerson, setPaymentHistoryPerson] = useState(null);
+  const sortedUsers = useMemo(
+    () => [...users].sort((first, second) => String(first.name || "").localeCompare(String(second.name || ""), "pt-BR", { sensitivity: "base" })),
+    [users]
+  );
 
   async function load() {
     const [config, summaryData, userData] = await Promise.all([
@@ -1494,10 +1498,11 @@ function AdminPanel({ refresh }) {
       <section className="panel">
         <h2>Permissões de usuários</h2>
         <div className="user-cards">
-          {users.map((user) => (
+          {sortedUsers.map((user) => (
             <article className="user-card" key={user.id}>
               <strong>{user.name}</strong>
               <span>{user.whatsapp}</span>
+              <span>{user.email || "E-mail não informado"}</span>
               <select value={user.role} onChange={(e) => updateRole(user.id, e.target.value)}>
                 <option value="usuarios">usuarios</option>
                 <option value="checkin">Check-in</option>
