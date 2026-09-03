@@ -255,6 +255,7 @@ function paymentStatusDetailLabel(value) {
     accredited: "Valor creditado",
     pending_waiting_payment: "Aguardando pagamento",
     pending_waiting_transfer: "Aguardando transferência Pix",
+    pending_challenge: "Aguardando autenticação do banco",
     pending_contingency: "Aguardando processamento",
     pending_review_manual: "Aguardando revisao manual",
     cc_rejected_bad_filled_card_number: "Cartao preenchido incorretamente",
@@ -269,6 +270,7 @@ function paymentStatusDetailLabel(value) {
     cc_rejected_invalid_installments: "Parcelamento invalido",
     cc_rejected_max_attempts: "Limite de tentativas excedido",
     cc_rejected_other_reason: "Recusado pelo cartao",
+    cc_rejected_3ds_challenge: "Autenticação do banco não concluída",
     refunded: "Valor devolvido",
     by_admin: "Devolvido pelo administrador",
     settled: "Valor reembolsado ao comprador",
@@ -480,6 +482,7 @@ function BuyTicket({ refresh }) {
   const [pixModal, setPixModal] = useState(null);
   const [cardModal, setCardModal] = useState(false);
   const [cardError, setCardError] = useState("");
+  const [cardChallenge, setCardChallenge] = useState(null);
   const [ticketLotsModal, setTicketLotsModal] = useState(true);
   const [socialTicketModal, setSocialTicketModal] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -566,6 +569,11 @@ function BuyTicket({ refresh }) {
       } else if (data.cardPayment) {
         setCardModal(false);
         const detail = paymentStatusDetailLabel(data.cardPayment.statusDetail);
+        if (data.cardPayment.status === "pending" && data.cardPayment.statusDetail === "pending_challenge" && data.cardPayment.threeDSInfo?.externalResourceUrl && data.cardPayment.threeDSInfo?.creq) {
+          setCardChallenge({ paymentId: data.cardPayment.id, ...data.cardPayment.threeDSInfo });
+          setNotice({ type: "alert", text: "Confirme sua identidade na tela do banco para concluir o pagamento." });
+          return;
+        }
         setNotice({
           type: data.cardPayment.status === "approved" ? "success" : "alert",
           text: data.cardPayment.status === "approved"
@@ -649,6 +657,11 @@ function BuyTicket({ refresh }) {
       {socialTicketModal && <SocialTicketModal onConfirm={confirmSocialTicket} onClose={() => setSocialTicketModal(false)} />}
       {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} />}
       {cardModal && <CardPaymentModal publicKey={config?.mercadoPagoPublicKey} total={total} loading={loading} error={cardError} onSubmit={checkout} onClose={() => !loading && setCardModal(false)} />}
+      {cardChallenge && <CardChallengeModal challenge={cardChallenge} onComplete={async () => {
+        setCardChallenge(null);
+        setNotice({ type: "alert", text: "Autenticação concluída. Estamos confirmando o pagamento com o banco." });
+        await refresh();
+      }} onClose={() => setCardChallenge(null)} />}
     </section>
   );
 }
@@ -783,6 +796,7 @@ function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose 
           await submitRef.current({
             token: formData.token,
             deviceId: String(window.MP_DEVICE_SESSION_ID || "").trim(),
+            cardholderName: formData.cardholderName,
             issuerId: formData.issuerId,
             paymentMethodId: formData.paymentMethodId,
             installments: Number(formData.installments),
@@ -868,6 +882,53 @@ function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose 
           </div>
         </form>
         <small className="card-security-note">Os dados do cartão são protegidos e tokenizados diretamente pelo Mercado Pago.</small>
+      </div>
+    </div>
+  );
+}
+
+function CardChallengeModal({ challenge, onComplete, onClose }) {
+  const iframeRef = useRef(null);
+  const completeRef = useRef(onComplete);
+
+  useEffect(() => {
+    completeRef.current = onComplete;
+  }, [onComplete]);
+
+  useEffect(() => {
+    const iframe = iframeRef.current;
+    if (!iframe || !challenge.externalResourceUrl || !challenge.creq) return undefined;
+    const frameDocument = iframe.contentWindow?.document;
+    if (!frameDocument) return undefined;
+    const form = frameDocument.createElement("form");
+    form.method = "POST";
+    form.action = challenge.externalResourceUrl;
+    const creq = frameDocument.createElement("input");
+    creq.type = "hidden";
+    creq.name = "creq";
+    creq.value = challenge.creq;
+    form.appendChild(creq);
+    frameDocument.body.appendChild(form);
+    form.submit();
+
+    const handleMessage = (event) => {
+      if (event.data?.status === "COMPLETE") completeRef.current();
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [challenge.externalResourceUrl, challenge.creq]);
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="card-challenge-title">
+      <div className="modal card-challenge-modal">
+        <div className="modal-head">
+          <div>
+            <h3 id="card-challenge-title">Confirme com seu banco</h3>
+            <small>Conclua a autenticação abaixo para autorizar o pagamento.</small>
+          </div>
+          <button type="button" className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        <iframe ref={iframeRef} name="mercado-pago-3ds" title="Autenticação segura do banco" className="card-challenge-frame" />
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ process.env.MERCADO_PAGO_ACCESS_TOKEN = "TEST_ACCESS_TOKEN_NOT_SECRET";
 const server = require("../server");
 const {
   applyMercadoPagoPayment,
+  createMercadoPagoCardPayment,
   db,
   extractMercadoPagoPaymentId,
   mercadoPagoRequest,
@@ -368,4 +369,45 @@ test("duplo checkout usa uma cobrança e retry recupera o mesmo Pix", async (t) 
   assert.equal(retry.body.pix.qrCode, "PIX-CODE");
   assert.equal(createCalls, 1);
   assert.equal(tables.tickets.length, 1);
+});
+
+test("cartão envia Device ID, titular e ativa 3DS opcional", async (t) => {
+  const originalFetch = global.fetch;
+  let captured;
+  global.fetch = async (_url, options) => {
+    captured = { headers: options.headers, body: JSON.parse(options.body) };
+    return {
+      ok: true,
+      status: 201,
+      async text() {
+        return JSON.stringify({ id: 4000, status: "pending", status_detail: "pending_challenge" });
+      }
+    };
+  };
+  t.after(() => { global.fetch = originalFetch; });
+
+  await createMercadoPagoCardPayment(
+    { name: "Nome do Cadastro", email: "cadastro@example.com", whatsapp: "83999999999", createdAt: "2026-01-01T00:00:00.000Z" },
+    "order-card-3ds",
+    75.6,
+    {
+      token: "card-token-test",
+      deviceId: "device-session-test",
+      cardholderName: "Titular do Cartão",
+      issuerId: "123",
+      paymentMethodId: "master",
+      installments: 2,
+      payer: { email: "titular@example.com", identification: { type: "CPF", number: "12345678900" } }
+    },
+    [{ ticketType: "meia", quantity: 1, unitPrice: 37.8 }, { ticketType: "social", quantity: 1, unitPrice: 37.8 }]
+  );
+
+  assert.equal(captured.headers["X-meli-session-id"], "device-session-test");
+  assert.equal(captured.body.three_d_secure_mode, "optional");
+  assert.equal(captured.body.capture, true);
+  assert.equal(captured.body.binary_mode, false);
+  assert.equal(captured.body.payer.first_name, "Titular");
+  assert.equal(captured.body.payer.last_name, "do Cartão");
+  assert.equal(captured.body.external_reference, "order-card-3ds");
+  assert.equal(captured.body.additional_info.items.length, 2);
 });

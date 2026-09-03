@@ -588,8 +588,8 @@ function ticketImageText(value, x, y, fontSize, fill, options = {}) {
 async function createTicketEmailImage(ticket) {
   const qrBuffer = await QRCode.toBuffer(ticket.code, { width: 440, margin: 2, type: "png" });
   const qrDataUrl = `data:image/png;base64,${qrBuffer.toString("base64")}`;
-  const eventLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "ejdbranca.png")).toString("base64")}`;
-  const anniversaryLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "25-anos-ejd.png")).toString("base64")}`;
+  const eventLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "trilhos-destinos.png")).toString("base64")}`;
+  const anniversaryLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "ejdbranca.png")).toString("base64")}`;
   const ticketType = ticketTypeEmailLabel(ticket.ticketType);
   const additionalNotice = ticket.ticketType === "social"
     ? "Leve 1 kg de alimento não perecível para entregar na entrada."
@@ -916,11 +916,12 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
   const identificationType = String(cardPayment?.payer?.identification?.type || "CPF").trim();
   const identificationNumber = cleanDigits(cardPayment?.payer?.identification?.number);
   const deviceId = String(cardPayment?.deviceId || "").trim().slice(0, 256);
+  const cardholderName = String(cardPayment?.cardholderName || user.name || "").trim();
   if (!token || !paymentMethodId || !isValidEmail(payerEmail) || !identificationNumber) {
     throw new Error("Confira os dados do cartão e do titular.");
   }
 
-  const nameParts = String(user.name || "").trim().split(/\s+/).filter(Boolean);
+  const nameParts = cardholderName.split(/\s+/).filter(Boolean);
   const firstName = nameParts.shift() || "Comprador";
   const lastName = nameParts.join(" ");
   const phoneDigits = cleanDigits(user.whatsapp);
@@ -952,6 +953,9 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
       ...(issuerId ? { issuer_id: issuerId } : {}),
       external_reference: orderId,
       notification_url: `${APP_URL}/webhook/mercadopago`,
+      three_d_secure_mode: "optional",
+      capture: true,
+      binary_mode: false,
       payer: {
         email: payerEmail,
         first_name: firstName,
@@ -1140,7 +1144,11 @@ async function api(req, res, pathname) {
           cardPayment: paymentMethod === "credit_card" ? {
             id: String(payment.id),
             status: payment.status,
-            statusDetail: payment.status_detail || null
+            statusDetail: payment.status_detail || null,
+            threeDSInfo: payment.three_ds_info ? {
+              externalResourceUrl: payment.three_ds_info.external_resource_url,
+              creq: payment.three_ds_info.creq
+            } : null
           } : null,
           message: "Pagamento existente recuperado."
         });
@@ -1238,10 +1246,14 @@ async function api(req, res, pathname) {
       items: ticketItems,
       paymentMethod,
       pix,
-      cardPayment: cardPayment ? {
-        id: String(cardPayment.id),
-        status: cardPayment.status,
-        statusDetail: cardPayment.status_detail || null
+        cardPayment: cardPayment ? {
+          id: String(cardPayment.id),
+          status: cardPayment.status,
+          statusDetail: cardPayment.status_detail || null,
+          threeDSInfo: cardPayment.three_ds_info ? {
+            externalResourceUrl: cardPayment.three_ds_info.external_resource_url,
+            creq: cardPayment.three_ds_info.creq
+          } : null
       } : null,
       message: cardPayment || pix ? "Pagamento criado." : "Pagamento aguardando configuração do Mercado Pago."
     });
@@ -1609,6 +1621,7 @@ module.exports = server;
 if (process.env.NODE_ENV === "test") {
   module.exports.testHelpers = {
     applyMercadoPagoPayment,
+    createMercadoPagoCardPayment,
     extractMercadoPagoPaymentId,
     mercadoPagoWebhook,
     mercadoPagoRequest,
