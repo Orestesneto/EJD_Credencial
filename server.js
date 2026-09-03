@@ -588,7 +588,7 @@ function ticketImageText(value, x, y, fontSize, fill, options = {}) {
 async function createTicketEmailImage(ticket) {
   const qrBuffer = await QRCode.toBuffer(ticket.code, { width: 440, margin: 2, type: "png" });
   const qrDataUrl = `data:image/png;base64,${qrBuffer.toString("base64")}`;
-  const eventLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "trilhos-destinos.png")).toString("base64")}`;
+  const eventLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "ejdbranca.png")).toString("base64")}`;
   const anniversaryLogoDataUrl = `data:image/png;base64,${fs.readFileSync(path.join(brandingDir, "25-anos-ejd.png")).toString("base64")}`;
   const ticketType = ticketTypeEmailLabel(ticket.ticketType);
   const additionalNotice = ticket.ticketType === "social"
