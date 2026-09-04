@@ -149,7 +149,7 @@ const ticketTypeDiscounts = {
   meia: 0.5
 };
 const ticketTypes = new Set(["inteiro", "meia", "social"]);
-const saleLots = new Set(["relampago", "lote2", "lote3"]);
+const saleLots = new Set(["relampago", "lote2", "lote3", "lote4"]);
 
 function isMercadoPagoWaiting(ticket) {
   const status = ticket.mercadoPagoStatus;

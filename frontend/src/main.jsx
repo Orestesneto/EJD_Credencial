@@ -8,7 +8,8 @@ const confirmedPaymentSeenKey = "ejd_confirmed_payment_seen";
 const saleLotPricePresets = {
   relampago: { ticketPrice: "60", socialTicketPrice: "40" },
   lote2: { ticketPrice: "80", socialTicketPrice: "50" },
-  lote3: { ticketPrice: "100", socialTicketPrice: "60" }
+  lote3: { ticketPrice: "90", socialTicketPrice: "55" },
+  lote4: { ticketPrice: "100", socialTicketPrice: "60" }
 };
 const roles = {
   usuarios: "usuarios",
@@ -687,7 +688,16 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
     },
     { id: "lote3",
       name: "2° Lote",
-      period: ["Início: 01/10 às 12:00", "Término: dia do encontro"],
+      period: ["Início: 01/10", "Término: 01/11 às 12:00"],
+      prices: [
+        ["Inteira", "90,00"],
+        ["Meia", "45,00"],
+        ["Social", "55,00"]
+      ]
+    },
+    { id: "lote4",
+      name: "3° Lote",
+      period: ["Início: 01/11", "Término: dia do encontro"],
       prices: [
         ["Inteira", "100,00"],
         ["Meia", "50,00"],
@@ -1447,11 +1457,15 @@ function AdminPanel({ refresh }) {
               </label>
               <label>
                 <input type="radio" name="currentSaleLot" value="lote2" checked={settings.currentSaleLot === "lote2"} onChange={(e) => updateSaleLot(e.target.value)} />
-                2 Lote
+                1° Lote
               </label>
               <label>
                 <input type="radio" name="currentSaleLot" value="lote3" checked={settings.currentSaleLot === "lote3"} onChange={(e) => updateSaleLot(e.target.value)} />
-                3 Lote
+                2° Lote
+              </label>
+              <label>
+                <input type="radio" name="currentSaleLot" value="lote4" checked={settings.currentSaleLot === "lote4"} onChange={(e) => updateSaleLot(e.target.value)} />
+                3° Lote
               </label>
             </fieldset>
             <label className="toggle">
