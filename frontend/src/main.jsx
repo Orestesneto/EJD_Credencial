@@ -669,7 +669,7 @@ function BuyTicket({ refresh }) {
 function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
   const lots = [
     { id: "relampago",
-      name: "1° Lote Relâmpago",
+      name: "Lote Relâmpago",
       prices: [
         ["Inteira", "60,00"],
         ["Meia", "30,00"],
@@ -677,7 +677,8 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
       ]
     },
     { id: "lote2",
-      name: "2° Lote",
+      name: "1° Lote",
+      period: ["Início: 04/09 às 12:00", "Término: 01/10 às 11:59"],
       prices: [
         ["Inteira", "80,00"],
         ["Meia", "40,00"],
@@ -685,7 +686,8 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
       ]
     },
     { id: "lote3",
-      name: "3° Lote",
+      name: "2° Lote",
+      period: ["Início: 01/10 às 12:00", "Término: dia do encontro"],
       prices: [
         ["Inteira", "100,00"],
         ["Meia", "50,00"],
@@ -715,6 +717,11 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
                 <h4>{lot.name}</h4>
                 <strong className={`lot-status ${index === currentLotIndex ? "active" : ""}`}>{lotStatus(index)}</strong>
               </div>
+              {lot.period && (
+                <div className="lot-period">
+                  {lot.period.map((line) => <span key={line}>{line}</span>)}
+                </div>
+              )}
               <div className="lot-prices">
                 {lot.prices.map(([label, price]) => (
                   <div key={label}>
