@@ -1335,6 +1335,7 @@ function AdminPanel({ refresh }) {
   const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
   const [paymentHistoryPerson, setPaymentHistoryPerson] = useState(null);
   const [exportingUsers, setExportingUsers] = useState(false);
+  const [exportingSales, setExportingSales] = useState(false);
   const sortedUsers = useMemo(
     () => [...users].sort((first, second) => String(first.name || "").localeCompare(String(second.name || ""), "pt-BR", { sensitivity: "base" })),
     [users]
@@ -1410,6 +1411,33 @@ function AdminPanel({ refresh }) {
     }
   }
 
+  async function exportSalesReport() {
+    setExportingSales(true);
+    try {
+      const token = localStorage.getItem(tokenKey);
+      const response = await fetch("/api/admin/sales-report/export", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || "Não foi possível gerar o relatório.");
+      }
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = "relatorio-vendas-ingressos.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setExportingSales(false);
+    }
+  }
+
   async function confirmTicket(ticketId) {
     try {
       await api(`/api/admin/tickets/${ticketId}/confirm`, { method: "POST", body: "{}" });
@@ -1437,7 +1465,12 @@ function AdminPanel({ refresh }) {
       {activeAdminTab === "dashboard" && (
         <>
       <section className="panel">
-        <h2>Ingresso</h2>
+        <div className="panel-title-actions">
+          <h2>Ingresso</h2>
+          <button type="button" className="secondary" onClick={exportSalesReport} disabled={exportingSales}>
+            {exportingSales ? "Gerando relatório..." : "Baixar relatório Excel"}
+          </button>
+        </div>
         <Notice notice={notice} />
         {settings && (
           <form className="admin-form" onSubmit={saveSettings}>

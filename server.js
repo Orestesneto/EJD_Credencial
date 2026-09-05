@@ -537,6 +537,78 @@ function createUsersWorkbook(users) {
   return workbook;
 }
 
+const saleLotLabels = {
+  relampago: "Lote Relâmpago",
+  lote2: "1º Lote",
+  lote3: "2º Lote",
+  lote4: "3º Lote"
+};
+
+function ticketSaleLot(ticket) {
+  if (saleLots.has(ticket.saleLot)) return ticket.saleLot;
+  const originalPrice = Number(ticket.originalPrice);
+  if (originalPrice === 60) return "relampago";
+  if (originalPrice === 80) return "lote2";
+  if (originalPrice === 90) return "lote3";
+  if (originalPrice === 100) return "lote4";
+  return null;
+}
+
+function createSalesReportWorkbook(tickets) {
+  const paidTickets = tickets.filter(isTicketPaid);
+  const refundedTickets = tickets.filter((ticket) => ["refunded", "charged_back"].includes(ticket.mercadoPagoStatus));
+  const soldByType = paidTickets.reduce((totals, ticket) => {
+    const type = ticketTypes.has(ticket.ticketType) ? ticket.ticketType : "inteiro";
+    totals[type] += 1;
+    return totals;
+  }, { inteiro: 0, meia: 0, social: 0 });
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "EJD - Credenciamento";
+  workbook.created = new Date();
+  const worksheet = workbook.addWorksheet("Relatório de vendas");
+  worksheet.columns = [
+    { header: "Indicador", key: "label", width: 32 },
+    { header: "Quantidade", key: "quantity", width: 18 },
+    { header: "Total", key: "total", width: 20 }
+  ];
+  worksheet.addRows([
+    { label: "Ingressos inteiros vendidos", quantity: soldByType.inteiro },
+    { label: "Meias-entradas vendidas", quantity: soldByType.meia },
+    { label: "Ingressos sociais vendidos", quantity: soldByType.social },
+    { label: "Ingressos com estorno", quantity: refundedTickets.length }
+  ]);
+  worksheet.addRow({});
+  worksheet.addRow({ label: "Totais por lote" });
+
+  for (const lot of Object.keys(saleLotLabels)) {
+    const lotTickets = paidTickets.filter((ticket) => ticketSaleLot(ticket) === lot);
+    worksheet.addRow({
+      label: saleLotLabels[lot],
+      quantity: lotTickets.length,
+      total: Number(lotTickets.reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2))
+    });
+  }
+
+  const unidentifiedTickets = paidTickets.filter((ticket) => !ticketSaleLot(ticket));
+  if (unidentifiedTickets.length) {
+    worksheet.addRow({
+      label: "Lote não identificado (vendas antigas)",
+      quantity: unidentifiedTickets.length,
+      total: Number(unidentifiedTickets.reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2))
+    });
+  }
+
+  worksheet.views = [{ state: "frozen", ySplit: 1 }];
+  worksheet.getRow(1).eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003D69" } };
+  });
+  worksheet.getRow(7).font = { bold: true, color: { argb: "FF003D69" } };
+  worksheet.getColumn("C").numFmt = 'R$ #,##0.00';
+  return workbook;
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = "";
@@ -923,7 +995,15 @@ function mercadoPagoPixResponse(data) {
   };
 }
 
-async function createMercadoPagoPixPayment(user, orderId, quantity, total) {
+function mercadoPagoPixDescription(user, ticketItems) {
+  const typeLabels = { inteiro: "inteira", meia: "meia", social: "social" };
+  const purchase = (Array.isArray(ticketItems) ? ticketItems : [])
+    .map((item) => `${item.quantity}x ${typeLabels[item.ticketType] || item.ticketType}`)
+    .join(", ");
+  return `${user.name || "Usuário"} | ${user.whatsapp || "sem telefone"} | ${purchase || "ingresso"}`.slice(0, 256);
+}
+
+async function createMercadoPagoPixPayment(user, orderId, quantity, total, ticketItems) {
   if (!MP_TOKEN) return null;
   const transactionAmount = Number(Number(total).toFixed(2));
   const data = await mercadoPagoRequest("https://api.mercadopago.com/v1/payments", {
@@ -935,7 +1015,7 @@ async function createMercadoPagoPixPayment(user, orderId, quantity, total) {
     },
     body: JSON.stringify({
       transaction_amount: transactionAmount,
-      description: `${quantity} ingresso(s) - Encontrão 25 Anos`,
+      description: mercadoPagoPixDescription(user, ticketItems),
       payment_method_id: "pix",
       external_reference: orderId,
       notification_url: `${APP_URL}/webhook/mercadopago`,
@@ -1217,6 +1297,7 @@ async function api(req, res, pathname) {
       status: "pending",
       mercadoPagoStatus: "pending",
       ticketType: item.ticketType,
+      saleLot: saleLots.has(settings.currentSaleLot) ? settings.currentSaleLot : "relampago",
       originalPrice: unitPrice,
       price: item.unitPrice,
       serviceFee: Number((item.unitPrice * serviceFeeRate).toFixed(2)),
@@ -1231,7 +1312,7 @@ async function api(req, res, pathname) {
     let cardPayment = null;
     try {
       if (paymentMethod === "pix") {
-        pix = await createMercadoPagoPixPayment(auth.user, orderId, quantity, total);
+        pix = await createMercadoPagoPixPayment(auth.user, orderId, quantity, total, ticketItems);
         if (!pix) return send(res, 400, { message: "Mercado Pago nao configurado para gerar Pix." });
         if (pix) {
           for (const ticket of tickets) {
@@ -1500,6 +1581,19 @@ async function api(req, res, pathname) {
     res.writeHead(200, {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "Content-Disposition": 'attachment; filename="usuarios-ingressos.xlsx"',
+      "Content-Length": buffer.length,
+      "Cache-Control": "no-store"
+    });
+    return res.end(Buffer.from(buffer));
+  }
+
+  if (pathname === "/api/admin/sales-report/export" && req.method === "GET") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const workbook = createSalesReportWorkbook(await db.all("tickets"));
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": 'attachment; filename="relatorio-vendas-ingressos.xlsx"',
       "Content-Length": buffer.length,
       "Cache-Control": "no-store"
     });
