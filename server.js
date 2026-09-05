@@ -544,6 +544,13 @@ const saleLotLabels = {
   lote4: "3º Lote"
 };
 
+const saleLotTicketPrices = {
+  relampago: { inteiro: 60, meia: 30, social: 40 },
+  lote2: { inteiro: 80, meia: 40, social: 50 },
+  lote3: { inteiro: 90, meia: 45, social: 55 },
+  lote4: { inteiro: 100, meia: 50, social: 60 }
+};
+
 function ticketSaleLot(ticket) {
   if (saleLots.has(ticket.saleLot)) return ticket.saleLot;
   const originalPrice = Number(ticket.originalPrice);
@@ -557,55 +564,89 @@ function ticketSaleLot(ticket) {
 function createSalesReportWorkbook(tickets) {
   const paidTickets = tickets.filter(isTicketPaid);
   const refundedTickets = tickets.filter((ticket) => ["refunded", "charged_back"].includes(ticket.mercadoPagoStatus));
-  const soldByType = paidTickets.reduce((totals, ticket) => {
-    const type = ticketTypes.has(ticket.ticketType) ? ticket.ticketType : "inteiro";
-    totals[type] += 1;
-    return totals;
-  }, { inteiro: 0, meia: 0, social: 0 });
-
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "EJD - Credenciamento";
   workbook.created = new Date();
-  const worksheet = workbook.addWorksheet("Relatório de vendas");
-  worksheet.columns = [
-    { header: "Indicador", key: "label", width: 32 },
-    { header: "Quantidade", key: "quantity", width: 18 },
-    { header: "Total", key: "total", width: 20 }
-  ];
-  worksheet.addRows([
-    { label: "Ingressos inteiros vendidos", quantity: soldByType.inteiro },
-    { label: "Meias-entradas vendidas", quantity: soldByType.meia },
-    { label: "Ingressos sociais vendidos", quantity: soldByType.social },
-    { label: "Ingressos com estorno", quantity: refundedTickets.length }
-  ]);
-  worksheet.addRow({});
-  worksheet.addRow({ label: "Totais por lote" });
+  const worksheet = workbook.addWorksheet("Ingressos por lote");
+  const widths = [24, 12, 12, 12, 12, 16, 16, 16, 18, 18, 18, 20];
+  widths.forEach((width, index) => { worksheet.getColumn(index + 1).width = width; });
+
+  worksheet.mergeCells("A1:L1");
+  worksheet.getCell("A1").value = "INGRESSOS POR LOTE — EJD 25 ANOS";
+  worksheet.getCell("A1").alignment = { horizontal: "center", vertical: "middle" };
+  worksheet.getRow(1).height = 34;
+
+  worksheet.mergeCells("A3:A4");
+  worksheet.mergeCells("B3:E3");
+  worksheet.mergeCells("F3:H3");
+  worksheet.mergeCells("I3:K3");
+  worksheet.mergeCells("L3:L4");
+  worksheet.getCell("A3").value = "Lote";
+  worksheet.getCell("B3").value = "Quantidade de ingressos";
+  worksheet.getCell("F3").value = "Valor unitário (R$)";
+  worksheet.getCell("I3").value = "Valor total por categoria (R$)";
+  worksheet.getCell("L3").value = "Valor total do lote (R$)";
+  ["B4", "C4", "D4", "F4", "G4", "H4", "I4", "J4", "K4"].forEach((cell, index) => {
+    worksheet.getCell(cell).value = ["Inteira", "Meia", "Social", "Inteira", "Meia", "Social", "Inteira", "Meia", "Social"][index];
+  });
+  worksheet.getCell("E4").value = "Total";
 
   for (const lot of Object.keys(saleLotLabels)) {
     const lotTickets = paidTickets.filter((ticket) => ticketSaleLot(ticket) === lot);
-    worksheet.addRow({
-      label: saleLotLabels[lot],
-      quantity: lotTickets.length,
-      total: Number(lotTickets.reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2))
-    });
+    const categoryTickets = Object.fromEntries([...ticketTypes].map((type) => [
+      type,
+      lotTickets.filter((ticket) => (ticketTypes.has(ticket.ticketType) ? ticket.ticketType : "inteiro") === type)
+    ]));
+    const categoryTotal = (type) => Number(categoryTickets[type].reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2));
+    const unitPrice = (type) => categoryTickets[type].length
+      ? Number(categoryTickets[type][0].price || 0)
+      : saleLotTicketPrices[lot][type];
+    worksheet.addRow([
+      saleLotLabels[lot],
+      categoryTickets.inteiro.length,
+      categoryTickets.meia.length,
+      categoryTickets.social.length,
+      lotTickets.length,
+      unitPrice("inteiro"),
+      unitPrice("meia"),
+      unitPrice("social"),
+      categoryTotal("inteiro"),
+      categoryTotal("meia"),
+      categoryTotal("social"),
+      Number(lotTickets.reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2))
+    ]);
   }
 
   const unidentifiedTickets = paidTickets.filter((ticket) => !ticketSaleLot(ticket));
   if (unidentifiedTickets.length) {
-    worksheet.addRow({
-      label: "Lote não identificado (vendas antigas)",
-      quantity: unidentifiedTickets.length,
-      total: Number(unidentifiedTickets.reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2))
-    });
+    const count = (type) => unidentifiedTickets.filter((ticket) => (ticket.ticketType || "inteiro") === type).length;
+    const total = (type) => Number(unidentifiedTickets.filter((ticket) => (ticket.ticketType || "inteiro") === type)
+      .reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2));
+    worksheet.addRow(["Lote não identificado", count("inteiro"), count("meia"), count("social"), unidentifiedTickets.length, null, null, null,
+      total("inteiro"), total("meia"), total("social"), total("inteiro") + total("meia") + total("social")]);
   }
 
-  worksheet.views = [{ state: "frozen", ySplit: 1 }];
-  worksheet.getRow(1).eachCell((cell) => {
+  const totalRow = worksheet.addRow(["TOTAL GERAL", null, null, null, paidTickets.length, null, null, null, null, null, null,
+    Number(paidTickets.reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2))]);
+  const refundRow = worksheet.addRow(["Ingressos com estorno", refundedTickets.length]);
+
+  worksheet.views = [{ state: "frozen", ySplit: 4 }];
+  [1, 3, 4].forEach((rowNumber) => worksheet.getRow(rowNumber).eachCell((cell) => {
     cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003D69" } };
-  });
-  worksheet.getRow(7).font = { bold: true, color: { argb: "FF003D69" } };
-  worksheet.getColumn("C").numFmt = 'R$ #,##0.00';
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+  }));
+  for (let row = 3; row <= refundRow.number; row += 1) {
+    worksheet.getRow(row).eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFD0D7DE" } }, bottom: { style: "thin", color: { argb: "FFD0D7DE" } },
+        left: { style: "thin", color: { argb: "FFD0D7DE" } }, right: { style: "thin", color: { argb: "FFD0D7DE" } }
+      };
+    });
+  }
+  ["F", "G", "H", "I", "J", "K", "L"].forEach((column) => { worksheet.getColumn(column).numFmt = 'R$ #,##0.00'; });
+  totalRow.font = { bold: true, color: { argb: "FF003D69" } };
+  refundRow.font = { bold: true, color: { argb: "FF8C2441" } };
   return workbook;
 }
 
@@ -1770,6 +1811,7 @@ module.exports = server;
 if (process.env.NODE_ENV === "test") {
   module.exports.testHelpers = {
     applyMercadoPagoPayment,
+    createSalesReportWorkbook,
     createUsersWorkbook,
     createMercadoPagoCardPayment,
     extractMercadoPagoPaymentId,

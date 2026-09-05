@@ -9,6 +9,7 @@ const server = require("../server");
 const {
   applyMercadoPagoPayment,
   createMercadoPagoCardPayment,
+  createSalesReportWorkbook,
   createUsersWorkbook,
   db,
   extractMercadoPagoPaymentId,
@@ -29,6 +30,27 @@ test("planilha separa usuários com e sem ingressos em duas abas", async () => {
   assert.equal(workbook.getWorksheet("Com ingressos").getRow(2).getCell(4).value, 2);
   assert.equal(workbook.getWorksheet("Sem ingressos").getRow(2).getCell(1).value, "Bruna");
   assert.equal(workbook.getWorksheet("Sem ingressos").columnCount, 3);
+});
+
+test("relatório de vendas separa categorias por lote e soma o total arrecadado", async () => {
+  const paidTicket = (ticketType, saleLot, price) => ({ ticketType, saleLot, price, status: "confirmed", mercadoPagoStatus: "approved" });
+  const workbook = createSalesReportWorkbook([
+    paidTicket("inteiro", "relampago", 60),
+    paidTicket("meia", "relampago", 30),
+    paidTicket("meia", "relampago", 30),
+    paidTicket("social", "relampago", 40),
+    paidTicket("social", "lote2", 50),
+    { ticketType: "inteiro", saleLot: "lote2", price: 80, status: "pending", mercadoPagoStatus: "refunded" }
+  ]);
+  const worksheet = workbook.getWorksheet("Ingressos por lote");
+  const buffer = await workbook.xlsx.writeBuffer();
+
+  assert.ok(buffer.length > 0);
+  assert.deepEqual(worksheet.getRow(5).values.slice(1, 6), ["Lote Relâmpago", 1, 2, 1, 4]);
+  assert.deepEqual(worksheet.getRow(5).values.slice(9, 13), [60, 60, 40, 160]);
+  assert.deepEqual(worksheet.getRow(6).values.slice(1, 6), ["1º Lote", 0, 0, 1, 1]);
+  assert.equal(worksheet.getRow(9).getCell(12).value, 210);
+  assert.equal(worksheet.getRow(10).getCell(2).value, 1);
 });
 
 function memoryStorage(rows) {
