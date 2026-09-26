@@ -1828,7 +1828,16 @@ function serveStatic(req, res, pathname) {
     ".jpg": "image/jpeg",
     ".ico": "image/x-icon"
   };
-  res.writeHead(200, { "Content-Type": types[ext] || "application/octet-stream" });
+  const cacheControl = ext === ".html"
+    ? "no-store, no-cache, must-revalidate, proxy-revalidate"
+    : pathname.startsWith("/assets/")
+      ? "public, max-age=31536000, immutable"
+      : "public, max-age=3600";
+  res.writeHead(200, {
+    "Content-Type": types[ext] || "application/octet-stream",
+    "Cache-Control": cacheControl,
+    ...(ext === ".html" ? { Pragma: "no-cache", Expires: "0" } : {})
+  });
   fs.createReadStream(filePath).pipe(res);
 }
 

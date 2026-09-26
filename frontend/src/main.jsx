@@ -706,6 +706,7 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
     }
   ];
   const currentLotIndex = Math.max(lots.findIndex((lot) => lot.id === currentSaleLot), 0);
+  const visibleLots = lots.slice(0, currentLotIndex + 1);
 
   function lotStatus(index) {
     if (index < currentLotIndex) return "Encerrado";
@@ -721,15 +722,19 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
           <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
         </div>
         <div className="lot-list">
-          {lots.map((lot, index) => (
+          {visibleLots.map((lot, index) => {
+            const displayedPeriod = index === currentLotIndex
+              ? [...(lot.period?.slice(0, 1) || []), "Término: A qualquer momento!"]
+              : lot.period;
+            return (
             <section className="lot-card" key={lot.name}>
               <div className="lot-card-head">
                 <h4>{lot.name}</h4>
                 <strong className={`lot-status ${index === currentLotIndex ? "active" : ""}`}>{lotStatus(index)}</strong>
               </div>
-              {lot.period && (
+              {displayedPeriod && (
                 <div className="lot-period">
-                  {lot.period.map((line) => <span key={line}>{line}</span>)}
+                  {displayedPeriod.map((line) => <span key={line}>{line}</span>)}
                 </div>
               )}
               <div className="lot-prices">
@@ -741,7 +746,8 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
                 ))}
               </div>
             </section>
-          ))}
+            );
+          })}
         </div>
         <div className="modal-actions">
           <button className="primary" onClick={onClose}>Continuar</button>
