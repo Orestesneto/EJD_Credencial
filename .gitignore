@@ -12,3 +12,5 @@ data/
 *.log
 .idea/
 **/.idea/
+deploy-hostinger-*/
+hostinger-deploy-*.zip
