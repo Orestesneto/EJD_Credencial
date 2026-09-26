@@ -647,6 +647,50 @@ function summarizeShirtOrders(orders) {
     };
 }
 
+function createShirtOrdersWorkbook(orders) {
+  orders = orders.filter((order) => order.status === "confirmed" || order.mercadoPagoStatus === "approved");
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "EJD 25 Anos";
+  const details = workbook.addWorksheet("Pedidos de camisas");
+  details.columns = [
+    { header: "Nome do usuário", key: "name", width: 40 },
+    { header: "Modelo e tamanho da camisa", key: "shirt", width: 32 },
+    { header: "Cupom utilizado", key: "coupon", width: 24 },
+    { header: "Quantidade", key: "quantity", width: 16 },
+    { header: "Status do pagamento", key: "status", width: 24 }
+  ];
+  for (const order of orders) {
+    for (const item of order.items?.length ? order.items : [{}]) {
+      const option = shirtOptions[item.sku] || {};
+      details.addRow({
+        name: order.buyerName || "Não informado",
+        shirt: (item.model || option.model || "Não informado") + " — " + (item.size || option.size || "Não informado"),
+        coupon: order.couponCode || "Sem cupom",
+        quantity: Math.max(Number.parseInt(item.quantity, 10) || 0, 0),
+        status: order.status === "confirmed" || order.mercadoPagoStatus === "approved" ? "Confirmado" : order.mercadoPagoStatus === "rejected" ? "Recusado" : ["refunded", "charged_back"].includes(order.mercadoPagoStatus) ? "Estornado" : order.mercadoPagoStatus === "cancelled" ? "Cancelado" : "Pendente"
+      });
+    }
+  }
+  const { summary } = summarizeShirtOrders(orders);
+  const totals = workbook.addWorksheet("Quantidades pagas");
+  totals.columns = [
+    { header: "Modelo", key: "model", width: 32 },
+    { header: "Tamanho", key: "size", width: 24 },
+    { header: "Quantidade", key: "quantity", width: 18 }
+  ];
+  summary.quantitiesByModelAndSize.forEach((item) => totals.addRow(item));
+  totals.addRow(["Total de camisas pagas", "", summary.paidShirts]).font = { bold: true };
+  for (const sheet of [details, totals]) {
+    sheet.views = [{ state: "frozen", ySplit: 1 }];
+    sheet.getRow(1).eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003F68" } };
+    });
+  }
+  details.autoFilter = { from: "A1", to: "E1" };
+  return workbook;
+}
+
 function createUsersWorkbook(users) {
   const sortedUsers = [...users].sort((first, second) =>
     String(first.name || "").localeCompare(String(second.name || ""), "pt-BR", { sensitivity: "base" })
@@ -1865,6 +1909,19 @@ async function api(req, res, pathname) {
     return send(res, 200, { settings });
   }
 
+  if (pathname === "/api/admin/shirt-orders/export" && req.method === "GET") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const orders = (await db.all("shirt_orders")).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    const buffer = await createShirtOrdersWorkbook(orders).xlsx.writeBuffer();
+    res.writeHead(200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": 'attachment; filename="pedidos-camisas.xlsx"',
+      "Content-Length": buffer.length,
+      "Cache-Control": "no-store"
+    });
+    return res.end(Buffer.from(buffer));
+  }
+
   if (pathname === "/api/admin/shirt-orders" && req.method === "GET") {
     if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
     const orders = (await db.all("shirt_orders")).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
@@ -2171,6 +2228,7 @@ if (process.env.NODE_ENV === "test") {
     applyMercadoPagoPayment,
     createSalesReportWorkbook,
     createUsersWorkbook,
+    createShirtOrdersWorkbook,
     summarizeShirtOrders,
     createMercadoPagoCardPayment,
     extractMercadoPagoPaymentId,

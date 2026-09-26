@@ -1587,8 +1587,9 @@ function PaymentHistoryModal({ person, onClose }) {
                   </div>
                   <div>
                     <span>Compra</span>
-                    <strong>{attempt.quantity} {attempt.quantity === 1 ? "ingresso" : "ingressos"}</strong>
-                    <small>{(attempt.ticketTypes || []).map(ticketTypeLabel).join(", ")}</small>
+                    <strong>{attempt.quantity} {attempt.productType === "shirt" ? (attempt.quantity === 1 ? "camisa" : "camisas") : (attempt.quantity === 1 ? "ingresso" : "ingressos")}</strong>
+                    <small>{attempt.productType === "shirt" ? (attempt.items || []).map((item) => item.quantity + "× " + item.model + " — " + item.size).join(", ") : (attempt.ticketTypes || []).map(ticketTypeLabel).join(", ")}</small>
+                    {attempt.productType === "shirt" && <small>{attempt.couponCode ? "Cupom " + attempt.couponCode + " • desconto " + formatCurrency(attempt.discount) : "Sem cupom"}</small>}
                   </div>
                   <div>
                     <span>Valor</span>
@@ -1630,6 +1631,7 @@ function AdminPanel({ refresh }) {
   const [notice, setNotice] = useState(null);
   const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
   const [paymentHistoryPerson, setPaymentHistoryPerson] = useState(null);
+  const [exportingShirts, setExportingShirts] = useState(false);
   const [exportingUsers, setExportingUsers] = useState(false);
   const [exportingSales, setExportingSales] = useState(false);
   const [undoingManualTicketId, setUndoingManualTicketId] = useState(null);
@@ -1718,6 +1720,33 @@ function AdminPanel({ refresh }) {
       await refresh();
     } catch (error) {
       setNotice({ type: "error", text: error.message });
+    }
+  }
+
+  async function exportShirts() {
+    setExportingShirts(true);
+    try {
+      const token = localStorage.getItem(tokenKey);
+      const response = await fetch("/api/admin/shirt-orders/export", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || "Não foi possível gerar a planilha.");
+      }
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = "pedidos-camisas.xlsx";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setExportingShirts(false);
     }
   }
 
@@ -1982,7 +2011,13 @@ function AdminPanel({ refresh }) {
       )}
       {activeAdminTab === "shirts" && (
         <section className="panel">
-          <h2>Pedidos de Camisas</h2>
+          <div className="shirt-orders-header">
+            <h2>Pedidos de Camisas</h2>
+            <button type="button" className="primary shirt-export-button" onClick={exportShirts} disabled={exportingShirts}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" /></svg>
+              {exportingShirts ? "Gerando planilha..." : "Baixar Excel"}
+            </button>
+          </div>
           <div className="stats">
             <Info label="Pedidos" value={shirtOrdersData.summary.totalOrders || 0} />
             <Info label="Pedidos pagos" value={shirtOrdersData.summary.confirmedOrders || 0} />
@@ -1993,7 +2028,11 @@ function AdminPanel({ refresh }) {
           </div>
           <div className="shirt-orders-list">
             {shirtOrdersData.orders.map((order) => <article className="admin-list-card" key={order.id}>
-              <div><strong>{order.buyerName}</strong><small>{order.buyerEmail} • {order.buyerWhatsapp}</small></div>
+              <div><button type="button" className="participant-history-button" onClick={() => setPaymentHistoryPerson({
+                participantName: order.buyerName,
+                participantWhatsapp: order.buyerWhatsapp,
+                paymentHistory: shirtOrdersData.orders.filter((item) => order.userId ? item.userId === order.userId : item.id === order.id).map((item) => ({ ...item, productType: "shirt" }))
+              })}>{order.buyerName}</button><small>{order.buyerEmail} • {order.buyerWhatsapp}</small></div>
               <div className="order-items">{(order.items || []).map((item) => <span key={item.sku}>{item.quantity}× {item.model} — {item.size}</span>)}</div>
               <div><strong>{formatCurrency(order.total)}</strong><small>{order.paymentMethod === "credit_card" ? "Cartão de crédito" : "Pix"}</small></div>
               <div><span className={`pill ${order.status === "confirmed" ? "confirmed" : "pending"}`}>{order.status === "confirmed" ? "Confirmado" : "Pendente"}</span><small>{order.couponCode ? `Cupom ${order.couponCode} • desconto ${formatCurrency(order.discount)}` : "Sem cupom"}</small></div>

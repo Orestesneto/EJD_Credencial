@@ -408,3 +408,6 @@ label { color: var(--navy-deep); font: 600 1rem "Teko", sans-serif; letter-spaci
   .table .row > .pill { justify-self: start; }
   .table .row > button { width: 100%; }
 }
+.shirt-orders-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; }
+.shirt-orders-header h2 { margin: 0; }
+.shirt-orders-header .shirt-export-button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 50px; padding: 0 24px; margin-left: auto; font-size: 1rem; }
