@@ -10,6 +10,18 @@ create table if not exists tickets (
   updated_at timestamptz default now()
 );
 
+create table if not exists shirt_orders (
+  id text primary key,
+  data jsonb not null,
+  updated_at timestamptz default now()
+);
+
+create table if not exists coupons (
+  id text primary key,
+  data jsonb not null,
+  updated_at timestamptz default now()
+);
+
 create table if not exists settings (
   id text primary key,
   data jsonb not null,

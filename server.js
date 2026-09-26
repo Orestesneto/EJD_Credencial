@@ -48,7 +48,7 @@ const mysqlPool = MYSQL_HOST && MYSQL_DATABASE && MYSQL_USER && MYSQL_PASSWORD
       enableKeepAlive: true
     })
   : null;
-const tables = ["users", "tickets", "settings", "sessions"];
+const tables = ["users", "tickets", "shirt_orders", "coupons", "settings", "sessions"];
 const tableNames = new Set(tables);
 const dejavuFontsDir = path.join(__dirname, "assets", "fonts");
 const compiledBrandingDir = path.join(STATIC_DIR, "branding");
@@ -110,6 +110,22 @@ function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function normalizeCouponCode(value) {
+  return String(value || "").trim().toUpperCase().replace(/\s+/g, "");
+}
+
+function couponUsageCount(coupon, orders) {
+  return orders.filter((order) => (
+    (order.couponId === coupon.id || order.couponCode === coupon.code)
+    && (order.status === "confirmed" || isMercadoPagoWaiting(order))
+  )).length;
+}
+
+function couponHasReachedLimit(coupon, orders) {
+  const maxUses = Number.parseInt(coupon.maxUses, 10);
+  return Number.isInteger(maxUses) && maxUses > 0 && couponUsageCount(coupon, orders) >= maxUses;
+}
+
 function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(value));
 }
@@ -150,6 +166,25 @@ const ticketTypeDiscounts = {
 };
 const ticketTypes = new Set(["inteiro", "meia", "social"]);
 const saleLots = new Set(["relampago", "lote2", "lote3", "lote4"]);
+const shirtOptions = {
+  unisex_PP: { model: "Unissex", size: "PP" },
+  unisex_P: { model: "Unissex", size: "P" },
+  unisex_M: { model: "Unissex", size: "M" },
+  unisex_G: { model: "Unissex", size: "G" },
+  unisex_GG: { model: "Unissex", size: "GG" },
+  babylook_P: { model: "Babylook", size: "P" },
+  babylook_M: { model: "Babylook", size: "M" },
+  babylook_G: { model: "Babylook", size: "G" },
+  babylook_GG: { model: "Babylook", size: "GG" },
+  babylook_XGG: { model: "Babylook", size: "XGG" },
+  infantil_2: { model: "Infantil", size: "2 Anos" },
+  infantil_4: { model: "Infantil", size: "4 Anos" },
+  infantil_6: { model: "Infantil", size: "6 Anos" },
+  infantil_8: { model: "Infantil", size: "8 Anos" },
+  infantil_10: { model: "Infantil", size: "10 Anos" },
+  infantil_12: { model: "Infantil", size: "12 Anos" },
+  infantil_14: { model: "Infantil", size: "14 Anos" }
+};
 
 function isMercadoPagoWaiting(ticket) {
   const status = ticket.mercadoPagoStatus;
@@ -247,6 +282,8 @@ function assertTable(table) {
 async function neonAll(table) {
   if (table === "users") return neonSql`select id, data from users`;
   if (table === "tickets") return neonSql`select id, data from tickets`;
+  if (table === "shirt_orders") return neonSql`select id, data from shirt_orders`;
+  if (table === "coupons") return neonSql`select id, data from coupons`;
   if (table === "settings") return neonSql`select id, data from settings`;
   return neonSql`select id, data from sessions`;
 }
@@ -259,6 +296,12 @@ async function neonSave(table, record) {
   if (table === "tickets") {
     return neonSql`insert into tickets (id, data, updated_at) values (${record.id}, ${payload}::jsonb, now()) on conflict (id) do update set data = excluded.data, updated_at = now()`;
   }
+  if (table === "shirt_orders") {
+    return neonSql`insert into shirt_orders (id, data, updated_at) values (${record.id}, ${payload}::jsonb, now()) on conflict (id) do update set data = excluded.data, updated_at = now()`;
+  }
+  if (table === "coupons") {
+    return neonSql`insert into coupons (id, data, updated_at) values (${record.id}, ${payload}::jsonb, now()) on conflict (id) do update set data = excluded.data, updated_at = now()`;
+  }
   if (table === "settings") {
     return neonSql`insert into settings (id, data, updated_at) values (${record.id}, ${payload}::jsonb, now()) on conflict (id) do update set data = excluded.data, updated_at = now()`;
   }
@@ -268,6 +311,8 @@ async function neonSave(table, record) {
 async function neonDelete(table, idValue) {
   if (table === "users") return neonSql`delete from users where id = ${idValue}`;
   if (table === "tickets") return neonSql`delete from tickets where id = ${idValue}`;
+  if (table === "shirt_orders") return neonSql`delete from shirt_orders where id = ${idValue}`;
+  if (table === "coupons") return neonSql`delete from coupons where id = ${idValue}`;
   if (table === "settings") return neonSql`delete from settings where id = ${idValue}`;
   return neonSql`delete from sessions where id = ${idValue}`;
 }
@@ -283,6 +328,20 @@ async function ensureNeonSchema() {
   `;
   await neonSql`
     create table if not exists tickets (
+      id text primary key,
+      data jsonb not null,
+      updated_at timestamptz default now()
+    )
+  `;
+  await neonSql`
+    create table if not exists shirt_orders (
+      id text primary key,
+      data jsonb not null,
+      updated_at timestamptz default now()
+    )
+  `;
+  await neonSql`
+    create table if not exists coupons (
       id text primary key,
       data jsonb not null,
       updated_at timestamptz default now()
@@ -479,6 +538,8 @@ async function ensureSeed() {
       ticketSalesClosed: false,
       ticketPrice: 60,
       socialTicketPrice: 40,
+      shirtPrice: 60,
+      shirtSalesClosed: false,
       currentSaleLot: "relampago",
       updatedAt: now()
     });
@@ -554,6 +615,36 @@ function addUsersWorksheet(workbook, name, users, includeTicketCount) {
     cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003D69" } };
   });
+}
+
+function summarizeShirtOrders(orders) {
+    const confirmed = orders.filter((order) => order.status === "confirmed" || order.mercadoPagoStatus === "approved");
+    const quantitiesByModelAndSize = [...confirmed.reduce((totals, order) => {
+      for (const item of order.items || []) {
+        const option = shirtOptions[item.sku] || {};
+        const model = item.model || option.model || "Não informado";
+        const size = item.size || option.size || "Não informado";
+        const key = `${model}:${size}`;
+        const current = totals.get(key) || { model, size, quantity: 0 };
+        current.quantity += Math.max(Number.parseInt(item.quantity, 10) || 0, 0);
+        totals.set(key, current);
+      }
+      return totals;
+    }, new Map()).values()].sort((first, second) => (
+      first.model.localeCompare(second.model, "pt-BR") || first.size.localeCompare(second.size, "pt-BR", { numeric: true })
+    ));
+    return {
+      orders,
+      summary: {
+        totalOrders: orders.length,
+        confirmedOrders: confirmed.length,
+        paidShirts: quantitiesByModelAndSize.reduce((total, item) => total + item.quantity, 0),
+        receivedTotal: Number(confirmed.reduce((total, order) => total + Number(order.total || 0), 0).toFixed(2)),
+        withCoupon: orders.filter((order) => Boolean(order.couponCode)).length,
+        withoutCoupon: orders.filter((order) => !order.couponCode).length,
+        quantitiesByModelAndSize
+      }
+    };
 }
 
 function createUsersWorkbook(users) {
@@ -991,6 +1082,35 @@ async function applyMercadoPagoPayment(payment, options = {}) {
     updatedCount += 1;
   }
 
+  // Storage injetado é usado pelos testes/integrações legadas apenas para ingressos.
+  let shirtOrders = [];
+  if (!options.storage) {
+    try { shirtOrders = await storage.all("shirt_orders") || []; } catch (error) {
+      mercadoPagoLog("pedidos de camisa indisponíveis durante sincronização", { error: error.message });
+    }
+  }
+  const relatedShirtOrders = shirtOrders.filter((order) => (
+    order.productType === "shirt" && (String(order.paymentId || "") === paymentId
+    || (reference && (String(order.orderId || "") === reference || String(order.id || "") === reference)))
+  ));
+  for (const order of relatedShirtOrders) {
+    order.paymentId = paymentId;
+    order.mercadoPagoStatus = paymentStatus;
+    order.mercadoPagoStatusDetail = payment.status_detail || null;
+    order.mercadoPagoStatusUpdatedAt = statusUpdatedAt;
+    if (payment.date_of_expiration) order.paymentExpiresAt = payment.date_of_expiration;
+    if (paymentStatus === "approved") {
+      order.status = "confirmed";
+      order.confirmedAt = payment.date_approved || order.confirmedAt || statusUpdatedAt;
+      order.paidAt = payment.date_approved || order.paidAt || order.confirmedAt;
+    } else {
+      order.status = "pending";
+    }
+    order.updatedAt = statusUpdatedAt;
+    await storage.save("shirt_orders", order);
+    updatedCount += 1;
+  }
+
   let emailResult = { skipped: true };
   const hasUnsentApprovedTickets = relatedTickets.some((ticket) => isTicketPaid(ticket) && !ticket.emailSentAt);
   if (paymentStatus === "approved" && hasUnsentApprovedTickets && options.sendEmail !== false) {
@@ -998,7 +1118,7 @@ async function applyMercadoPagoPayment(payment, options = {}) {
     emailResult = await emailSender(relatedTickets);
   }
 
-  return { paymentId, reference, paymentStatus, relatedTickets, updatedCount, newlyApprovedCount, emailResult };
+  return { paymentId, reference, paymentStatus, relatedTickets, relatedShirtOrders, updatedCount, newlyApprovedCount, emailResult };
 }
 
 async function synchronizeMercadoPagoPayment(paymentId, options = {}) {
@@ -1067,7 +1187,11 @@ function mercadoPagoPixResponse(data) {
   };
 }
 
-function mercadoPagoPixDescription(user, ticketItems) {
+function mercadoPagoPixDescription(user, ticketItems, purchaseKind = "ticket") {
+  if (purchaseKind === "shirt") {
+    const purchase = (Array.isArray(ticketItems) ? ticketItems : []).map((item) => `${item.quantity}x ${item.model} ${item.size}`).join(", ");
+    return `${user.name || "Usuário"} | ${user.whatsapp || "sem telefone"} | ${purchase || "camisa"}`.slice(0, 256);
+  }
   const typeLabels = { inteiro: "inteira", meia: "meia", social: "social" };
   const purchase = (Array.isArray(ticketItems) ? ticketItems : [])
     .map((item) => `${item.quantity}x ${typeLabels[item.ticketType] || item.ticketType}`)
@@ -1075,7 +1199,7 @@ function mercadoPagoPixDescription(user, ticketItems) {
   return `${user.name || "Usuário"} | ${user.whatsapp || "sem telefone"} | ${purchase || "ingresso"}`.slice(0, 256);
 }
 
-async function createMercadoPagoPixPayment(user, orderId, quantity, total, ticketItems) {
+async function createMercadoPagoPixPayment(user, orderId, quantity, total, ticketItems, purchaseKind = "ticket") {
   if (!MP_TOKEN) return null;
   const transactionAmount = Number(Number(total).toFixed(2));
   const data = await mercadoPagoRequest("https://api.mercadopago.com/v1/payments", {
@@ -1087,7 +1211,7 @@ async function createMercadoPagoPixPayment(user, orderId, quantity, total, ticke
     },
     body: JSON.stringify({
       transaction_amount: transactionAmount,
-      description: mercadoPagoPixDescription(user, ticketItems),
+      description: mercadoPagoPixDescription(user, ticketItems, purchaseKind),
       payment_method_id: "pix",
       external_reference: orderId,
       notification_url: `${APP_URL}/webhook/mercadopago`,
@@ -1100,12 +1224,17 @@ async function createMercadoPagoPixPayment(user, orderId, quantity, total, ticke
   return mercadoPagoPixResponse(data);
 }
 
-async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, ticketItems) {
+async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, ticketItems, purchaseKind = "ticket") {
   if (!MP_TOKEN) return null;
   const token = String(cardPayment?.token || "").trim();
   const paymentMethodId = String(cardPayment?.paymentMethodId || "").trim();
   const issuerId = String(cardPayment?.issuerId || "").trim();
-  const installments = Math.min(Math.max(Number.parseInt(cardPayment?.installments, 10) || 1, 1), 3);
+  const requestedInstallments = Math.max(Number.parseInt(cardPayment?.installments, 10) || 1, 1);
+  const maxInstallments = purchaseKind === "shirt" ? 2 : 3;
+  if (requestedInstallments > maxInstallments) {
+    throw new Error(`Selecione no máximo ${maxInstallments}x para este pagamento.`);
+  }
+  const installments = requestedInstallments;
   const payerEmail = normalizeEmail(cardPayment?.payer?.email || user.email);
   const identificationType = String(cardPayment?.payer?.identification?.type || "CPF").trim();
   const identificationNumber = cleanDigits(cardPayment?.payer?.identification?.number);
@@ -1122,10 +1251,10 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
   const areaCode = phoneDigits.length >= 10 ? phoneDigits.slice(0, 2) : "";
   const phoneNumber = phoneDigits.length >= 10 ? phoneDigits.slice(2) : phoneDigits;
   const additionalItems = (Array.isArray(ticketItems) ? ticketItems : []).map((item) => ({
-    id: `ingresso-${item.ticketType}`,
-    title: `Ingresso ${item.ticketType} - Encontrão 25 Anos`,
-    description: "Ingresso para evento presencial",
-    category_id: "tickets",
+    id: purchaseKind === "shirt" ? `camisa-${item.sku}` : `ingresso-${item.ticketType}`,
+    title: purchaseKind === "shirt" ? `Camisa ${item.model} ${item.size} - Encontrão 25 Anos` : `Ingresso ${item.ticketType} - Encontrão 25 Anos`,
+    description: purchaseKind === "shirt" ? "Camisa oficial do evento" : "Ingresso para evento presencial",
+    category_id: purchaseKind === "shirt" ? "apparel" : "tickets",
     quantity: Number(item.quantity),
     unit_price: Number(item.unitPrice)
   }));
@@ -1141,7 +1270,7 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
     body: JSON.stringify({
       transaction_amount: Number(total),
       token,
-      description: "Ingresso - Encontrão 25 Anos",
+      description: purchaseKind === "shirt" ? "Camisa - Encontrão 25 Anos" : "Ingresso - Encontrão 25 Anos",
       installments,
       payment_method_id: paymentMethodId,
       ...(issuerId ? { issuer_id: issuerId } : {}),
@@ -1184,6 +1313,8 @@ async function api(req, res, pathname) {
       settings: {
         ...settings,
         socialTicketPrice: numberOrDefault(settings?.socialTicketPrice, settings?.ticketPrice),
+        shirtPrice: numberOrDefault(settings?.shirtPrice, 60),
+        shirtSalesClosed: Boolean(settings?.shirtSalesClosed),
         currentSaleLot: saleLots.has(settings?.currentSaleLot) ? settings.currentSaleLot : "relampago",
         ticketSalesClosed: Boolean(settings?.ticketSalesClosed)
       },
@@ -1238,10 +1369,15 @@ async function api(req, res, pathname) {
     if (!auth) return send(res, 401, { message: "Sessão inválida." });
     const userTickets = (await db.all("tickets")).filter((ticket) => ticket.userId === auth.user.id);
     await synchronizeWaitingTickets(userTickets);
+    let pendingShirtOrders = [];
+    try { pendingShirtOrders = (await db.all("shirt_orders")).filter((order) => order.userId === auth.user.id); } catch {}
+    await synchronizeWaitingTickets(pendingShirtOrders);
     const tickets = (await db.all("tickets")).filter((ticket) => ticket.userId === auth.user.id && !isExpiredPendingTicket(ticket));
     await trySendPurchasedTicketsEmail(tickets);
     const withQr = await Promise.all(tickets.map(ticketWithQr));
-    return send(res, 200, { user: publicUser(auth.user), tickets: withQr });
+    let shirtOrders = [];
+    try { shirtOrders = (await db.all("shirt_orders")).filter((order) => order.userId === auth.user.id); } catch {}
+    return send(res, 200, { user: publicUser(auth.user), tickets: withQr, shirtOrders });
   }
 
   if (pathname === "/api/logout" && req.method === "POST") {
@@ -1454,6 +1590,92 @@ async function api(req, res, pathname) {
     });
   }
 
+  if (pathname === "/api/coupons/validate" && req.method === "POST") {
+    if (!auth) return send(res, 401, { message: "Sessão inválida." });
+    const code = normalizeCouponCode(body.code);
+    const coupon = (await db.all("coupons")).find((item) => item.code === code && item.active !== false);
+    if (!coupon) return send(res, 404, { message: "Cupom de desconto inválido ou inativo." });
+    const shirtOrders = await db.all("shirt_orders");
+    if (couponHasReachedLimit(coupon, shirtOrders)) return send(res, 409, { message: "Este cupom atingiu o limite de utilizações." });
+    return send(res, 200, { valid: true, code: coupon.code, maxUses: coupon.maxUses || null, usageCount: couponUsageCount(coupon, shirtOrders) });
+  }
+
+  if (pathname === "/api/shirts/checkout" && req.method === "POST") {
+    if (!auth) return send(res, 401, { message: "Sessão inválida." });
+    const checkoutRequestId = String(body.checkoutRequestId || "").trim();
+    if (!/^[A-Za-z0-9_-]{8,100}$/.test(checkoutRequestId)) return send(res, 400, { message: "Identificador de checkout inválido." });
+    const checkoutLockKey = `shirt:${auth.user.id}:${checkoutRequestId}`;
+    if (mercadoPagoCheckoutRequests.has(checkoutLockKey)) return send(res, 409, { message: "Este pagamento já está sendo processado." });
+    mercadoPagoCheckoutRequests.add(checkoutLockKey);
+    res.once("finish", () => mercadoPagoCheckoutRequests.delete(checkoutLockKey));
+    res.once("close", () => mercadoPagoCheckoutRequests.delete(checkoutLockKey));
+
+    const settings = (await db.all("settings")).find((item) => item.id === "event");
+    if (settings.shirtSalesClosed) return send(res, 403, { message: "Venda de camisas fechada." });
+    const paymentMethod = body.paymentMethod === "credit_card" ? "credit_card" : "pix";
+    const couponCode = normalizeCouponCode(body.couponCode);
+    let coupon = null;
+    if (couponCode) {
+      coupon = (await db.all("coupons")).find((item) => item.code === couponCode && item.active !== false);
+      if (!coupon) return send(res, 400, { message: "Cupom de desconto inválido ou inativo." });
+      if (couponHasReachedLimit(coupon, await db.all("shirt_orders"))) return send(res, 409, { message: "Este cupom atingiu o limite de utilizações." });
+    }
+    const unitPrice = numberOrDefault(settings.shirtPrice, 60);
+    const requestedItems = body.items && typeof body.items === "object" ? body.items : {};
+    const items = Object.entries(shirtOptions).map(([sku, option]) => ({
+      sku,
+      ...option,
+      quantity: Math.max(Number.parseInt(requestedItems[sku], 10) || 0, 0),
+      unitPrice
+    })).filter((item) => item.quantity > 0);
+    const quantity = items.reduce((sum, item) => sum + item.quantity, 0);
+    if (quantity < 1) return send(res, 400, { message: "Selecione pelo menos 1 camisa." });
+    if (quantity > 20) return send(res, 400, { message: "Selecione no máximo 20 camisas por compra." });
+    const subtotal = Number((unitPrice * quantity).toFixed(2));
+    const baseServiceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
+    const serviceFeeRate = coupon ? 0 : baseServiceFeeRate;
+    const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
+    const discountRate = coupon ? 0.10 : 0;
+    const discount = Number((subtotal * discountRate).toFixed(2));
+    const total = Number((subtotal + serviceFee - discount).toFixed(2));
+    const orderId = `shr_${hash(`${auth.user.id}:${checkoutRequestId}`).slice(0, 40)}`;
+    const allOrders = await db.all("shirt_orders");
+    const existing = allOrders.find((order) => order.userId === auth.user.id && order.orderId === orderId);
+    if (existing) return send(res, 409, { message: "Este pedido de camisa já foi criado. Atualize a página para conferir o pagamento." });
+
+    let pix = null;
+    let cardPayment = null;
+    try {
+      if (paymentMethod === "pix") {
+        pix = await createMercadoPagoPixPayment(auth.user, orderId, quantity, total, items, "shirt");
+        if (!pix) return send(res, 400, { message: "Mercado Pago não configurado para gerar Pix." });
+      } else {
+        cardPayment = await createMercadoPagoCardPayment(auth.user, orderId, total, body.cardPayment, items, "shirt");
+      }
+    } catch (error) {
+      return send(res, 502, { message: error.message || "Falha ao solicitar pagamento no Mercado Pago." });
+    }
+    const payment = cardPayment || pix;
+    const order = {
+      id: id("shirt"), productType: "shirt", orderId, userId: auth.user.id, buyerName: auth.user.name,
+      buyerEmail: auth.user.email, buyerWhatsapp: auth.user.whatsapp, items, quantity,
+      unitPrice, subtotal, serviceFee, discount, discountRate, couponCode: coupon?.code || null, couponId: coupon?.id || null, total, paymentMethod,
+      paymentId: String(payment?.id || "") || null,
+      mercadoPagoStatus: payment?.status || "pending",
+      mercadoPagoStatusDetail: payment?.status_detail || payment?.statusDetail || null,
+      status: payment?.status === "approved" ? "confirmed" : "pending",
+      confirmedAt: payment?.status === "approved" ? (payment.date_approved || payment.dateApproved || now()) : null,
+      paymentExpiresAt: pix?.expiresAt || null, createdAt: now(), updatedAt: now()
+    };
+    await db.save("shirt_orders", order);
+    return send(res, 201, {
+      order, quantity, subtotal, serviceFee, discount, discountRate, total, items, paymentMethod, pix,
+      cardPayment: cardPayment ? { id: String(cardPayment.id), status: cardPayment.status, statusDetail: cardPayment.status_detail || null,
+        threeDSInfo: cardPayment.three_ds_info ? { externalResourceUrl: cardPayment.three_ds_info.external_resource_url, creq: cardPayment.three_ds_info.creq } : null } : null,
+      message: "Pagamento criado."
+    });
+  }
+
   if (pathname === "/api/checkin/validate" && req.method === "POST") {
     if (!requireRole(auth, ["checkin", "admin"])) return send(res, 403, { message: "Acesso negado." });
     const rawValue = String(body.value || "").trim().toUpperCase();
@@ -1632,6 +1854,8 @@ async function api(req, res, pathname) {
       ...current,
       ticketPrice: numberOrDefault(body.ticketPrice, current.ticketPrice),
       socialTicketPrice: numberOrDefault(body.socialTicketPrice, current.socialTicketPrice ?? current.ticketPrice),
+      shirtPrice: numberOrDefault(body.shirtPrice, current.shirtPrice ?? 60),
+      shirtSalesClosed: body.shirtSalesClosed === undefined ? Boolean(current.shirtSalesClosed) : Boolean(body.shirtSalesClosed),
       currentSaleLot: saleLots.has(body.currentSaleLot) ? body.currentSaleLot : current.currentSaleLot || "relampago",
       ticketSalesClosed: Boolean(body.ticketSalesClosed),
       registrationOpen: Boolean(body.registrationOpen),
@@ -1639,6 +1863,79 @@ async function api(req, res, pathname) {
     };
     await db.save("settings", settings);
     return send(res, 200, { settings });
+  }
+
+  if (pathname === "/api/admin/shirt-orders" && req.method === "GET") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const orders = (await db.all("shirt_orders")).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return send(res, 200, summarizeShirtOrders(orders));
+  }
+
+  if (pathname === "/api/admin/coupons" && req.method === "GET") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const coupons = await db.all("coupons");
+    const orders = await db.all("shirt_orders");
+    return send(res, 200, { coupons: coupons.map((coupon) => ({
+      ...coupon,
+      usageCount: couponUsageCount(coupon, orders),
+      limitReached: couponHasReachedLimit(coupon, orders),
+      usages: orders.filter((order) => (order.couponId === coupon.id || order.couponCode === coupon.code) && (order.status === "confirmed" || isMercadoPagoWaiting(order))).map((order) => ({
+        orderId: order.orderId, buyerName: order.buyerName, buyerEmail: order.buyerEmail,
+        paymentMethod: order.paymentMethod, discount: order.discount, createdAt: order.createdAt
+      }))
+    })) });
+  }
+
+  if (pathname === "/api/admin/coupons" && req.method === "POST") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const code = normalizeCouponCode(body.code);
+    const maxUses = Number.parseInt(body.maxUses, 10);
+    if (!/^[A-Z0-9_-]{3,30}$/.test(code)) return send(res, 400, { message: "Informe um cupom com 3 a 30 letras, números, _ ou -." });
+    if (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 100000) return send(res, 400, { message: "Informe uma quantidade de usos entre 1 e 100.000." });
+    const coupons = await db.all("coupons");
+    if (coupons.some((coupon) => coupon.code === code)) return send(res, 409, { message: "Este cupom já está cadastrado." });
+    const coupon = { id: id("coupon"), code, maxUses, active: true, createdAt: now(), updatedAt: now() };
+    await db.save("coupons", coupon);
+    return send(res, 201, { coupon });
+  }
+
+  const couponStatusMatch = pathname.match(/^\/api\/admin\/coupons\/([^/]+)\/status$/);
+  if (couponStatusMatch && req.method === "PUT") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const coupon = (await db.all("coupons")).find((item) => item.id === couponStatusMatch[1]);
+    if (!coupon) return send(res, 404, { message: "Cupom não encontrado." });
+    coupon.active = Boolean(body.active);
+    coupon.updatedAt = now();
+    await db.save("coupons", coupon);
+    return send(res, 200, { coupon });
+  }
+
+  const couponLimitMatch = pathname.match(/^\/api\/admin\/coupons\/([^/]+)\/limit$/);
+  if (couponLimitMatch && req.method === "PUT") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const maxUses = Number.parseInt(body.maxUses, 10);
+    if (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 100000) return send(res, 400, { message: "Informe uma quantidade de usos entre 1 e 100.000." });
+    const coupon = (await db.all("coupons")).find((item) => item.id === couponLimitMatch[1]);
+    if (!coupon) return send(res, 404, { message: "Cupom não encontrado." });
+    coupon.maxUses = maxUses;
+    coupon.updatedAt = now();
+    await db.save("coupons", coupon);
+    return send(res, 200, { coupon });
+  }
+
+  const couponCodeMatch = pathname.match(/^\/api\/admin\/coupons\/([^/]+)\/code$/);
+  if (couponCodeMatch && req.method === "PUT") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const code = normalizeCouponCode(body.code);
+    if (!/^[A-Z0-9_-]{3,30}$/.test(code)) return send(res, 400, { message: "Informe um cupom com 3 a 30 letras, números, _ ou -." });
+    const coupons = await db.all("coupons");
+    const coupon = coupons.find((item) => item.id === couponCodeMatch[1]);
+    if (!coupon) return send(res, 404, { message: "Cupom não encontrado." });
+    if (coupons.some((item) => item.id !== coupon.id && item.code === code)) return send(res, 409, { message: "Este código de cupom já está cadastrado." });
+    coupon.code = code;
+    coupon.updatedAt = now();
+    await db.save("coupons", coupon);
+    return send(res, 200, { coupon });
   }
 
   if (pathname === "/api/admin/users" && req.method === "GET") {
@@ -1874,6 +2171,7 @@ if (process.env.NODE_ENV === "test") {
     applyMercadoPagoPayment,
     createSalesReportWorkbook,
     createUsersWorkbook,
+    summarizeShirtOrders,
     createMercadoPagoCardPayment,
     extractMercadoPagoPaymentId,
     mercadoPagoWebhook,

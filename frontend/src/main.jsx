@@ -667,6 +667,204 @@ function BuyTicket({ refresh }) {
   );
 }
 
+function ShirtSizeGuide() {
+  const adultRows = [['Unissex','PP','61 cm','42 cm'],['Unissex','P','66 cm','48 cm'],['Unissex','M','70 cm','52 cm'],['Unissex','G','74 cm','54 cm'],['Unissex','GG','78 cm','56 cm'],['Babylook','P','56 cm','37 cm'],['Babylook','M','57 cm','40 cm'],['Babylook','G','60 cm','43 cm'],['Babylook','GG','63 cm','47 cm'],['Babylook','XGG','68 cm','49 cm']];
+  const childRows = [['2 Anos','42 cm','32 cm'],['4 Anos','47 cm','35 cm'],['6 Anos','50 cm','37 cm'],['8 Anos','53 cm','39 cm'],['10 Anos','56 cm','42 cm'],['12 Anos','58 cm','44 cm'],['14 Anos','60 cm','46 cm']];
+  return (
+    <section className="shirt-size-guide" aria-labelledby="shirt-size-guide-title">
+      <h3 id="shirt-size-guide-title">Tabela de tamanhos <small>(medidas aproximadas)</small></h3>
+      <div className="shirt-size-tables">
+        <div className="size-table-card"><h4>Unissex e Babylook</h4><div className="table-scroll"><table><thead><tr><th>Modelo</th><th>Tamanho</th><th>Altura</th><th>Largura</th></tr></thead><tbody>{adultRows.map((row) => <tr key={`${row[0]}-${row[1]}`}>{row.map((cell, index) => <td key={`${cell}-${index}`}>{cell}</td>)}</tr>)}</tbody></table></div></div>
+        <div className="size-table-card"><h4>Infantil</h4><div className="table-scroll"><table><thead><tr><th>Idade</th><th>Altura</th><th>Largura</th></tr></thead><tbody>{childRows.map((row) => <tr key={row[0]}>{row.map((cell, index) => <td key={`${cell}-${index}`}>{cell}</td>)}</tr>)}</tbody></table></div></div>
+      </div>
+    </section>
+  );
+}
+
+function BuyShirt({ refresh }) {
+  const checkoutRequestIdRef = useRef("");
+  const checkoutInFlightRef = useRef(false);
+  const [config, setConfig] = useState(null);
+  const [quantities, setQuantities] = useState({});
+  const [selectedSku, setSelectedSku] = useState("unisex_PP");
+  const [selectedQuantity, setSelectedQuantity] = useState(1);
+  const [paymentMethod, setPaymentMethod] = useState("pix");
+  const [couponCode, setCouponCode] = useState("");
+  const [validatedCoupon, setValidatedCoupon] = useState("");
+  const [validatingCoupon, setValidatingCoupon] = useState(false);
+  const [pixModal, setPixModal] = useState(null);
+  const [cardModal, setCardModal] = useState(false);
+  const [cardError, setCardError] = useState("");
+  const [cardChallenge, setCardChallenge] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const shirtGroups = [
+    { label: "Tamanho Unissex", model: "Unissex", options: [["unisex_PP", "PP"], ["unisex_P", "P"], ["unisex_M", "M"], ["unisex_G", "G"], ["unisex_GG", "GG"]] },
+    { label: "Tamanhos Babylook", model: "Babylook", options: [["babylook_P", "P"], ["babylook_M", "M"], ["babylook_G", "G"], ["babylook_GG", "GG"], ["babylook_XGG", "XGG"]] },
+    { label: "Tamanhos Infantil", model: "Infantil", options: [["infantil_2", "2 Anos"], ["infantil_4", "4 Anos"], ["infantil_6", "6 Anos"], ["infantil_8", "8 Anos"], ["infantil_10", "10 Anos"], ["infantil_12", "12 Anos"], ["infantil_14", "14 Anos"]] }
+  ];
+  const shirtOptions = Object.fromEntries(shirtGroups.flatMap((group) => group.options.map(([sku, size]) => [sku, { model: group.model, size }])));
+  const unitPrice = Number(config?.settings?.shirtPrice || 0);
+  const quantity = Object.values(quantities).reduce((sum, value) => sum + value, 0);
+  const subtotal = unitPrice * quantity;
+  const serviceFeeRate = validatedCoupon ? 0 : (paymentMethod === "credit_card" ? 0.08 : 0.01);
+  const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
+  const discountRate = validatedCoupon ? 0.10 : 0;
+  const discount = Number((subtotal * discountRate).toFixed(2));
+  const total = Number((subtotal + serviceFee - discount).toFixed(2));
+
+  useEffect(() => {
+    api("/api/config").then(setConfig).catch((error) => setNotice({ type: "error", text: error.message }));
+  }, []);
+
+  function updateQuantity(size, value) {
+    const parsed = Math.max(Number.parseInt(value, 10) || 0, 0);
+    const others = Object.entries(quantities).reduce((sum, [key, amount]) => key === size ? sum : sum + amount, 0);
+    setQuantities({ ...quantities, [size]: Math.min(parsed, Math.max(20 - others, 0)) });
+  }
+
+  function addSelectedShirt() {
+    const amount = Math.max(Number.parseInt(selectedQuantity, 10) || 1, 1);
+    if (quantity + amount > 20) {
+      setNotice({ type: "error", text: "Selecione no máximo 20 camisas por compra." });
+      return;
+    }
+    setQuantities({ ...quantities, [selectedSku]: (quantities[selectedSku] || 0) + amount });
+    setSelectedQuantity(1);
+    setNotice(null);
+  }
+
+  function handlePayClick() {
+    if (!quantity) return setNotice({ type: "error", text: "Selecione pelo menos 1 camisa." });
+    if (paymentMethod === "credit_card") {
+      setCardError("");
+      setCardModal(true);
+      return;
+    }
+    checkout();
+  }
+
+  async function validateCoupon() {
+    if (!couponCode.trim()) return setNotice({ type: "error", text: "Informe o cupom de desconto." });
+    setValidatingCoupon(true);
+    try {
+      const data = await api("/api/coupons/validate", { method: "POST", body: JSON.stringify({ code: couponCode }) });
+      setCouponCode(data.code);
+      setValidatedCoupon(data.code);
+      setNotice({ type: "success", text: `Cupom ${data.code} validado.` });
+    } catch (error) {
+      setValidatedCoupon("");
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setValidatingCoupon(false);
+    }
+  }
+
+  async function checkout(cardPayment = null) {
+    if (checkoutInFlightRef.current) return;
+    checkoutInFlightRef.current = true;
+    if (!checkoutRequestIdRef.current) checkoutRequestIdRef.current = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setLoading(true);
+    setNotice(null);
+    setCardError("");
+    try {
+      const data = await api("/api/shirts/checkout", {
+        method: "POST",
+        body: JSON.stringify({ items: quantities, paymentMethod, cardPayment, couponCode: validatedCoupon, checkoutRequestId: checkoutRequestIdRef.current })
+      });
+      checkoutRequestIdRef.current = "";
+      await refresh();
+      if (data.pix?.qrCode) {
+        setPixModal(data.pix);
+        setNotice({ type: "success", text: "Pix gerado. Aguarde a confirmação do pagamento." });
+      } else if (data.cardPayment) {
+        setCardModal(false);
+        if (data.cardPayment.status === "pending" && data.cardPayment.statusDetail === "pending_challenge" && data.cardPayment.threeDSInfo?.externalResourceUrl) {
+          setCardChallenge({ paymentId: data.cardPayment.id, ...data.cardPayment.threeDSInfo });
+          setNotice({ type: "alert", text: "Confirme sua identidade na tela do banco para concluir o pagamento." });
+        } else {
+          setNotice({ type: data.cardPayment.status === "approved" ? "success" : "alert", text: data.cardPayment.status === "approved" ? "Pagamento aprovado. Pedido de camisa confirmado." : `Pagamento ${paymentStatusLabel(data.cardPayment.status).toLowerCase()}.` });
+        }
+      }
+    } catch (error) {
+      if (cardPayment) setCardError(error.message);
+      else setNotice({ type: "error", text: error.message });
+    } finally {
+      checkoutInFlightRef.current = false;
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <h2>Comprar camisa</h2>
+      <div className="shirt-deadline-alert" role="alert">
+        <strong>Atenção!</strong>
+        <span>Os pedidos de camisas acontecerão somente até o dia 15 de outubro.</span>
+      </div>
+      <Notice notice={notice} />
+      <div className="checkout">
+        <div className="checkout-info">
+          <div className="price-summary">
+            <div><span>Camisas</span><strong>{quantity}</strong></div>
+            <div><span>Subtotal</span><strong>R$ {subtotal.toFixed(2).replace(".", ",")}</strong></div>
+            <div><span>Taxa de serviço ({Math.round(serviceFeeRate * 100)}%)</span><strong>R$ {serviceFee.toFixed(2).replace(".", ",")}</strong></div>
+            {validatedCoupon && <div><span>Desconto do cupom</span><strong>- R$ {discount.toFixed(2).replace(".", ",")}</strong></div>}
+            <div className="price-total"><span>Total</span><strong>R$ {total.toFixed(2).replace(".", ",")}</strong></div>
+          </div>
+          <fieldset className="ticket-type-options shirt-picker">
+            <legend>Escolha a camisa</legend>
+            <label htmlFor="shirt-size">Modelo e tamanho</label>
+            <select id="shirt-size" value={selectedSku} onChange={(event) => setSelectedSku(event.target.value)}>
+              {shirtGroups.map((group) => (
+                <optgroup label={group.label} key={group.label}>
+                  {group.options.map(([sku, size]) => <option value={sku} key={sku}>{group.model} — {size}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            <label htmlFor="shirt-quantity">Quantidade</label>
+            <div className="shirt-add-row">
+              <input id="shirt-quantity" type="number" min="1" max={Math.max(20 - quantity, 1)} value={selectedQuantity} onChange={(event) => setSelectedQuantity(event.target.value)} />
+              <button type="button" className="secondary" onClick={addSelectedShirt} disabled={quantity >= 20}>Adicionar</button>
+            </div>
+            <div className="shirt-cart" aria-live="polite">
+              {!quantity && <span>Nenhuma camisa adicionada.</span>}
+              {Object.entries(quantities).filter(([, amount]) => amount > 0).map(([sku, amount]) => (
+                <div className="shirt-cart-row" key={sku}>
+                  <div><strong>{shirtOptions[sku].model} — {shirtOptions[sku].size}</strong><span>{amount} × R$ {unitPrice.toFixed(2).replace(".", ",")}</span></div>
+                  <div className="quantity-control compact">
+                    <button type="button" className="quantity-button" onClick={() => updateQuantity(sku, amount - 1)}>-</button>
+                    <input inputMode="numeric" value={amount} onChange={(event) => updateQuantity(sku, event.target.value)} aria-label={`Quantidade de camisas ${shirtOptions[sku].model} ${shirtOptions[sku].size}`} />
+                    <button type="button" className="quantity-button" onClick={() => updateQuantity(sku, amount + 1)} disabled={quantity >= 20}>+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="payment-options">
+            <legend>Pagamento</legend>
+            <label><input type="radio" name="shirtPaymentMethod" value="pix" checked={paymentMethod === "pix"} onChange={(event) => setPaymentMethod(event.target.value)} /> Pix</label>
+            <label><input type="radio" name="shirtPaymentMethod" value="credit_card" checked={paymentMethod === "credit_card"} onChange={(event) => setPaymentMethod(event.target.value)} /> Cartão de crédito</label>
+          </fieldset>
+          <fieldset className="coupon-box">
+            <legend>Cupom de desconto</legend>
+            <div className="coupon-input-row">
+              <input value={couponCode} onChange={(event) => { setCouponCode(event.target.value.toUpperCase()); setValidatedCoupon(""); }} placeholder="Digite o cupom" />
+              <button type="button" className="secondary" onClick={validateCoupon} disabled={validatingCoupon}>{validatingCoupon ? "Validando..." : "Validar"}</button>
+            </div>
+            <small>{validatedCoupon ? `Cupom aplicado: ${validatedCoupon}. Desconto de 10% no total das camisas, sem taxa de serviço, no Pix ou cartão de crédito.` : "Sem cupom: taxa de 1% no Pix ou 8% no cartão."}</small>
+          </fieldset>
+        </div>
+        <button className="primary" disabled={loading} onClick={handlePayClick}>{loading ? "Abrindo pagamento..." : "Pagar"}</button>
+      </div>
+      <ShirtSizeGuide />
+      {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} />}
+      {cardModal && <CardPaymentModal publicKey={config?.mercadoPagoPublicKey} total={total} loading={loading} error={cardError} onSubmit={checkout} onClose={() => !loading && setCardModal(false)} maxInstallments={2} />}
+      {cardChallenge && <CardChallengeModal challenge={cardChallenge} onComplete={async () => { setCardChallenge(null); await refresh(); }} onClose={() => setCardChallenge(null)} />}
+    </section>
+  );
+}
+
 function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
   const lots = [
     { id: "relampago",
@@ -774,7 +972,7 @@ function SocialTicketModal({ onConfirm, onClose }) {
   );
 }
 
-function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose }) {
+function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose, maxInstallments = 3 }) {
   const submitRef = useRef(onSubmit);
   const [sdkError, setSdkError] = useState("");
 
@@ -793,6 +991,15 @@ function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose 
     }
 
     const mercadoPago = new window.MercadoPago(publicKey, { locale: "pt-BR" });
+    function limitInstallmentOptions() {
+      const select = document.getElementById("card-payment__installments");
+      if (!select) return;
+      [...select.options].forEach((option) => {
+        const installments = Number.parseInt(option.value, 10);
+        if (Number.isFinite(installments) && installments > maxInstallments) option.remove();
+      });
+    }
+
     const cardForm = mercadoPago.cardForm({
       amount: Number(total).toFixed(2),
       iframe: true,
@@ -834,18 +1041,29 @@ function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose 
         },
         onFetching: () => {
           setSdkError("");
+        },
+        onInstallmentsReceived: (installmentsError) => {
+          if (installmentsError) return;
+          setTimeout(limitInstallmentOptions, 0);
         }
       }
     });
+    const installmentsSelect = document.getElementById("card-payment__installments");
+    const installmentsObserver = installmentsSelect ? new MutationObserver(limitInstallmentOptions) : null;
+    if (installmentsSelect && installmentsObserver) {
+      installmentsObserver.observe(installmentsSelect, { childList: true });
+      limitInstallmentOptions();
+    }
 
     return () => {
+      installmentsObserver?.disconnect();
       try {
         cardForm.unmount?.();
       } catch {
         // O SDK remove os campos seguros quando o modal sai do DOM.
       }
     };
-  }, [publicKey, total]);
+  }, [publicKey, total, maxInstallments]);
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="card-payment-title">
@@ -894,6 +1112,7 @@ function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose 
           <label>
             Parcelas
             <select id="card-payment__installments" />
+            {maxInstallments === 12 && <small>Em até 2x sem juros</small>}
           </label>
           <label className="card-field-wide">
             E-mail
@@ -1001,6 +1220,71 @@ function PaymentConfirmedModal({ onClose, onOpenTickets }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function MyShirts({ orders }) {
+  const sortedOrders = [...orders].sort((first, second) => new Date(second.createdAt || 0) - new Date(first.createdAt || 0));
+
+  function downloadReceipt(order) {
+    const confirmed = order.status === "confirmed" || order.mercadoPagoStatus === "approved";
+    const lines = [
+      "EJD - Encontrão 25 Anos",
+      "Comprovante de pedido de camisas",
+      "",
+      `Status: ${confirmed ? "PAGAMENTO CONFIRMADO" : paymentStatusLabel(order.mercadoPagoStatus || order.status)}`,
+      `Pedido: ${order.orderId || order.id}`,
+      `Pagamento: ${order.paymentId || "Não informado"}`,
+      `Comprador: ${order.buyerName || "Não informado"}`,
+      `Data: ${formatDateTime(order.confirmedAt || order.createdAt)}`,
+      `Forma de pagamento: ${order.paymentMethod === "credit_card" ? "Cartão de crédito" : "Pix"}`,
+      "",
+      "Camisas:",
+      ...(order.items || []).map((item) => `${item.quantity}x ${item.model} - ${item.size}`),
+      "",
+      `Subtotal: ${formatCurrency(order.subtotal)}`,
+      `Taxa de serviço: ${formatCurrency(order.serviceFee)}`,
+      `Desconto: ${formatCurrency(order.discount)}`,
+      `Total: ${formatCurrency(order.total)}`,
+      order.couponCode ? `Cupom: ${order.couponCode}` : "Cupom: não utilizado"
+    ];
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `comprovante-camisas-${order.orderId || order.id}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <section className="panel">
+      <h2>Minhas camisas</h2>
+      <div className="my-shirt-orders">
+        {sortedOrders.map((order) => {
+          const confirmed = order.status === "confirmed" || order.mercadoPagoStatus === "approved";
+          const status = order.mercadoPagoStatus || order.status || "pending";
+          return <article className="my-shirt-card" key={order.id}>
+            <div className="my-shirt-head">
+              <div><strong>Pedido de camisas</strong><small>{formatDateTime(order.createdAt)}</small></div>
+              <span className={`pill ${confirmed ? "confirmed" : status}`}>{confirmed ? "Pagamento confirmado" : paymentStatusLabel(status)}</span>
+            </div>
+            <div className="my-shirt-items">{(order.items || []).map((item) => <div key={item.sku}><strong>{item.quantity}× {item.model}</strong><span>Tamanho {item.size}</span></div>)}</div>
+            <div className="my-shirt-details">
+              <div><span>Forma de pagamento</span><strong>{order.paymentMethod === "credit_card" ? "Cartão de crédito" : "Pix"}</strong></div>
+              <div><span>Cupom</span><strong>{order.couponCode || "Não utilizado"}</strong></div>
+              <div><span>Total</span><strong>{formatCurrency(order.total)}</strong></div>
+              <div><span>Confirmação</span><strong>{confirmed ? formatDateTime(order.confirmedAt || order.paidAt) : "Aguardando pagamento"}</strong></div>
+            </div>
+            <div className="my-shirt-identifiers"><small>Pedido: {order.orderId || order.id}</small><small>Pagamento: {order.paymentId || "Não informado"}</small></div>
+            {confirmed && <button type="button" className="secondary" onClick={() => downloadReceipt(order)}>Baixar comprovante</button>}
+          </article>;
+        })}
+        {!sortedOrders.length && <p>Você ainda não possui pedidos de camisas.</p>}
+      </div>
+    </section>
   );
 }
 
@@ -1337,6 +1621,12 @@ function AdminPanel({ refresh }) {
   const [summary, setSummary] = useState(null);
   const [settings, setSettings] = useState(null);
   const [users, setUsers] = useState([]);
+  const [shirtOrdersData, setShirtOrdersData] = useState({ orders: [], summary: {} });
+  const [coupons, setCoupons] = useState([]);
+  const [newCouponCode, setNewCouponCode] = useState("");
+  const [newCouponMaxUses, setNewCouponMaxUses] = useState("1");
+  const [couponLimits, setCouponLimits] = useState({});
+  const [couponCodes, setCouponCodes] = useState({});
   const [notice, setNotice] = useState(null);
   const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
   const [paymentHistoryPerson, setPaymentHistoryPerson] = useState(null);
@@ -1349,14 +1639,54 @@ function AdminPanel({ refresh }) {
   );
 
   async function load() {
-    const [config, summaryData, userData] = await Promise.all([
+    const [config, summaryData, userData, shirtData, couponData] = await Promise.all([
       api("/api/config"),
       api("/api/admin/summary"),
-      api("/api/admin/users")
+      api("/api/admin/users"),
+      api("/api/admin/shirt-orders"),
+      api("/api/admin/coupons")
     ]);
     setSettings(config.settings);
     setSummary(summaryData);
     setUsers(userData.users);
+    setShirtOrdersData(shirtData);
+    setCoupons(couponData.coupons);
+    setCouponLimits(Object.fromEntries(couponData.coupons.map((coupon) => [coupon.id, String(coupon.maxUses || 1)])));
+    setCouponCodes(Object.fromEntries(couponData.coupons.map((coupon) => [coupon.id, coupon.code])));
+  }
+
+  async function createCoupon(event) {
+    event.preventDefault();
+    try {
+      await api("/api/admin/coupons", { method: "POST", body: JSON.stringify({ code: newCouponCode, maxUses: newCouponMaxUses }) });
+      setNewCouponCode("");
+      setNewCouponMaxUses("1");
+      await load();
+      setNotice({ type: "success", text: "Cupom cadastrado com sucesso." });
+    } catch (error) { setNotice({ type: "error", text: error.message }); }
+  }
+
+  async function toggleCoupon(coupon) {
+    try {
+      await api(`/api/admin/coupons/${coupon.id}/status`, { method: "PUT", body: JSON.stringify({ active: !coupon.active }) });
+      await load();
+    } catch (error) { setNotice({ type: "error", text: error.message }); }
+  }
+
+  async function updateCouponLimit(coupon) {
+    try {
+      await api(`/api/admin/coupons/${coupon.id}/limit`, { method: "PUT", body: JSON.stringify({ maxUses: couponLimits[coupon.id] }) });
+      await load();
+      setNotice({ type: "success", text: `Limite do cupom ${coupon.code} atualizado.` });
+    } catch (error) { setNotice({ type: "error", text: error.message }); }
+  }
+
+  async function updateCouponCode(coupon) {
+    try {
+      await api(`/api/admin/coupons/${coupon.id}/code`, { method: "PUT", body: JSON.stringify({ code: couponCodes[coupon.id] }) });
+      await load();
+      setNotice({ type: "success", text: "Nome do cupom atualizado com sucesso." });
+    } catch (error) { setNotice({ type: "error", text: error.message }); }
   }
 
   useEffect(() => {
@@ -1482,6 +1812,8 @@ function AdminPanel({ refresh }) {
     <>
       <div className="admin-tabs">
         <button type="button" className={activeAdminTab === "dashboard" ? "active" : ""} onClick={() => setActiveAdminTab("dashboard")}>Área exclusiva</button>
+        <button type="button" className={activeAdminTab === "shirts" ? "active" : ""} onClick={() => setActiveAdminTab("shirts")}>Pedidos de Camisas</button>
+        <button type="button" className={activeAdminTab === "coupons" ? "active" : ""} onClick={() => setActiveAdminTab("coupons")}>Cupons de Desconto</button>
         <button type="button" className={activeAdminTab === "permissions" ? "active" : ""} onClick={() => setActiveAdminTab("permissions")}>Permissões de usuários</button>
       </div>
       {activeAdminTab === "dashboard" && (
@@ -1503,6 +1835,10 @@ function AdminPanel({ refresh }) {
             <label>
               Valor do ingresso social
               <input type="number" min="0" step="0.01" value={settings.socialTicketPrice ?? settings.ticketPrice ?? ""} onChange={(e) => setSettings({ ...settings, socialTicketPrice: e.target.value })} />
+            </label>
+            <label>
+              Valor da camisa
+              <input type="number" min="0" step="0.01" value={settings.shirtPrice ?? "60"} onChange={(e) => setSettings({ ...settings, shirtPrice: e.target.value })} />
             </label>
             <fieldset className="sale-lot-options">
               <legend>Lote atual</legend>
@@ -1530,6 +1866,10 @@ function AdminPanel({ refresh }) {
             <label className="toggle">
               <input type="checkbox" checked={Boolean(settings.ticketSalesClosed)} onChange={(e) => setSettings({ ...settings, ticketSalesClosed: e.target.checked })} />
               Fechado para a venda de ingressos
+            </label>
+            <label className="toggle">
+              <input type="checkbox" checked={Boolean(settings.shirtSalesClosed)} onChange={(e) => setSettings({ ...settings, shirtSalesClosed: e.target.checked })} />
+              Fechado para a venda de camisas
             </label>
             <button className="primary">Salvar</button>
           </form>
@@ -1640,6 +1980,58 @@ function AdminPanel({ refresh }) {
         </div>
       </section>
       )}
+      {activeAdminTab === "shirts" && (
+        <section className="panel">
+          <h2>Pedidos de Camisas</h2>
+          <div className="stats">
+            <Info label="Pedidos" value={shirtOrdersData.summary.totalOrders || 0} />
+            <Info label="Pedidos pagos" value={shirtOrdersData.summary.confirmedOrders || 0} />
+            <Info label="Camisas pagas" value={shirtOrdersData.summary.paidShirts || 0} />
+            <Info label="Total arrecadado" value={formatCurrency(shirtOrdersData.summary.receivedTotal)} />
+            <Info label="Com desconto" value={shirtOrdersData.summary.withCoupon || 0} />
+            <Info label="Sem cupom" value={shirtOrdersData.summary.withoutCoupon || 0} />
+          </div>
+          <div className="shirt-orders-list">
+            {shirtOrdersData.orders.map((order) => <article className="admin-list-card" key={order.id}>
+              <div><strong>{order.buyerName}</strong><small>{order.buyerEmail} • {order.buyerWhatsapp}</small></div>
+              <div className="order-items">{(order.items || []).map((item) => <span key={item.sku}>{item.quantity}× {item.model} — {item.size}</span>)}</div>
+              <div><strong>{formatCurrency(order.total)}</strong><small>{order.paymentMethod === "credit_card" ? "Cartão de crédito" : "Pix"}</small></div>
+              <div><span className={`pill ${order.status === "confirmed" ? "confirmed" : "pending"}`}>{order.status === "confirmed" ? "Confirmado" : "Pendente"}</span><small>{order.couponCode ? `Cupom ${order.couponCode} • desconto ${formatCurrency(order.discount)}` : "Sem cupom"}</small></div>
+            </article>)}
+            {!shirtOrdersData.orders.length && <p>Nenhum pedido de camisa encontrado.</p>}
+          </div>
+          <div className="shirt-quantity-summary">
+            <h3>Quantidades pagas por modelo e tamanho</h3>
+            <div className="table-scroll">
+              <table>
+                <thead><tr><th>Modelo</th><th>Tamanho</th><th>Quantidade</th></tr></thead>
+                <tbody>
+                  {(shirtOrdersData.summary.quantitiesByModelAndSize || []).map((item) => <tr key={`${item.model}-${item.size}`}><td>{item.model}</td><td>{item.size}</td><td>{item.quantity}</td></tr>)}
+                  {!shirtOrdersData.summary.quantitiesByModelAndSize?.length && <tr><td colSpan="3">Nenhuma camisa com pagamento confirmado.</td></tr>}
+                </tbody>
+                <tfoot><tr><th colSpan="2">Total de camisas pagas</th><th>{shirtOrdersData.summary.paidShirts || 0}</th></tr></tfoot>
+              </table>
+            </div>
+          </div>
+        </section>
+      )}
+      {activeAdminTab === "coupons" && (
+        <section className="panel">
+          <h2>Cupons de Desconto</h2>
+          <Notice notice={notice} />
+          <form className="coupon-admin-form" onSubmit={createCoupon}>
+            <label>Código do cupom<input value={newCouponCode} onChange={(event) => setNewCouponCode(event.target.value.toUpperCase())} placeholder="EX.: DESCONTO10" /></label>
+            <label>Quantidade máxima de usos<input type="number" min="1" max="100000" step="1" value={newCouponMaxUses} onChange={(event) => setNewCouponMaxUses(event.target.value)} /></label>
+            <button className="primary">Cadastrar cupom</button>
+          </form>
+          <div className="coupon-admin-list">{coupons.map((coupon) => <article className="admin-list-card coupon-card" key={coupon.id}>
+            <div className="coupon-code-editor"><div><input value={couponCodes[coupon.id] || ""} onChange={(event) => setCouponCodes({ ...couponCodes, [coupon.id]: event.target.value.toUpperCase() })} aria-label={`Nome do cupom ${coupon.code}`} /><button type="button" className="mini" onClick={() => updateCouponCode(coupon)}>Salvar nome</button></div><span className={`pill ${coupon.active ? "confirmed" : "rejected"}`}>{coupon.active ? "Ativo" : "Inativo"}</span></div>
+            <div><strong>{coupon.usageCount ?? coupon.usages.length} de {coupon.maxUses || "ilimitados"} usos</strong>{coupon.limitReached && <small>Limite de utilizações atingido</small>}{coupon.usages.map((usage) => <small key={usage.orderId}>{usage.buyerName} • {usage.buyerEmail} • {usage.paymentMethod === "credit_card" ? "Cartão" : "Pix"} • {formatCurrency(usage.discount)}</small>)}</div>
+            <div className="coupon-limit-editor"><input type="number" min="1" max="100000" value={couponLimits[coupon.id] || "1"} onChange={(event) => setCouponLimits({ ...couponLimits, [coupon.id]: event.target.value })} aria-label={`Limite de usos do cupom ${coupon.code}`} /><button type="button" className="mini" onClick={() => updateCouponLimit(coupon)}>Salvar limite</button></div>
+            <button type="button" className="secondary" onClick={() => toggleCoupon(coupon)}>{coupon.active ? "Desativar" : "Ativar"}</button>
+          </article>)}</div>
+        </section>
+      )}
       {paymentHistoryPerson && <PaymentHistoryModal person={paymentHistoryPerson} onClose={() => setPaymentHistoryPerson(null)} />}
     </>
   );
@@ -1648,6 +2040,7 @@ function AdminPanel({ refresh }) {
 function App() {
   const [user, setUser] = useState(null);
   const [tickets, setTickets] = useState([]);
+  const [shirtOrders, setShirtOrders] = useState([]);
   const [config, setConfig] = useState(null);
   const [active, setActive] = useState("profile");
   const [paymentConfirmedModal, setPaymentConfirmedModal] = useState(false);
@@ -1674,6 +2067,7 @@ function App() {
     ]);
     setUser(data.user);
     setTickets(data.tickets || []);
+    setShirtOrders(data.shirtOrders || []);
     setConfig(configData);
     detectConfirmedPayment(data.tickets || []);
     return data;
@@ -1700,6 +2094,7 @@ function App() {
     localStorage.removeItem(tokenKey);
     setUser(null);
     setTickets([]);
+    setShirtOrders([]);
     setPaymentConfirmedModal(false);
   }
 
@@ -1707,11 +2102,13 @@ function App() {
     if (!user) return [];
     const items = [{ id: "profile", label: "Meu perfil" }];
     if (["usuarios", "participant"].includes(user.role) && !config?.settings?.ticketSalesClosed) items.push({ id: "buy", label: "Comprar ingressos" });
+    if (["usuarios", "participant"].includes(user.role) && !config?.settings?.shirtSalesClosed) items.push({ id: "buy-shirt", label: "Comprar Camisa" });
     if (tickets.some(isTicketPaid)) items.push({ id: "tickets", label: "Meus ingressos" });
+    if (shirtOrders.length) items.push({ id: "shirts", label: "Minhas camisas" });
     if (["checkin", "admin"].includes(user.role)) items.push({ id: "checkin", label: "Acessar painel de check-in" });
     if (user.role === "admin") items.push({ id: "admin", label: "Área exclusiva" });
     return items;
-  }, [user, tickets, config]);
+  }, [user, tickets, shirtOrders, config]);
 
   useEffect(() => {
     if (tabs.length && !tabs.find((tab) => tab.id === active)) setActive(tabs[0].id);
@@ -1735,7 +2132,9 @@ function App() {
       </nav>
       {active === "profile" && <Profile user={user} />}
       {active === "buy" && <BuyTicket refresh={refresh} />}
+      {active === "buy-shirt" && <BuyShirt refresh={refresh} />}
       {active === "tickets" && <MyTickets tickets={tickets} />}
+      {active === "shirts" && <MyShirts orders={shirtOrders} />}
       {active === "checkin" && <CheckinPanel />}
       {active === "admin" && <AdminPanel refresh={refresh} />}
       {paymentConfirmedModal && (
