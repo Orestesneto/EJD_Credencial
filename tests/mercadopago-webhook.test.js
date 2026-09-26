@@ -15,8 +15,38 @@ const {
   extractMercadoPagoPaymentId,
   mercadoPagoRequest,
   isExpiredPendingTicket,
-  isTicketPaid
+  isTicketPaid,
+  undoManualPayment
 } = server.testHelpers;
+
+test("desfaz baixa manual e restaura o estado anterior do pagamento", async () => {
+  const ticket = {
+    id: "manual-undo",
+    status: "confirmed",
+    mercadoPagoStatus: "manual",
+    mercadoPagoStatusDetail: null,
+    confirmedAt: "2026-09-17T20:00:00.000Z",
+    paidAt: "2026-09-17T20:00:00.000Z",
+    emailSentAt: "2026-09-17T20:01:00.000Z",
+    manualConfirmedBy: "admin-1",
+    manualConfirmedByName: "Admin",
+    manualPreviousStatus: "pending",
+    manualPreviousMercadoPagoStatus: "rejected",
+    manualPreviousMercadoPagoStatusDetail: "cc_rejected_high_risk"
+  };
+  const tickets = [ticket];
+
+  await undoManualPayment(ticket, memoryStorage(tickets));
+
+  assert.equal(ticket.status, "pending");
+  assert.equal(ticket.mercadoPagoStatus, "rejected");
+  assert.equal(ticket.mercadoPagoStatusDetail, "cc_rejected_high_risk");
+  assert.equal(ticket.confirmedAt, null);
+  assert.equal(ticket.paidAt, null);
+  assert.equal(ticket.emailSentAt, null);
+  assert.equal(ticket.manualConfirmedBy, null);
+  assert.equal(isTicketPaid(ticket), false);
+});
 
 test("planilha separa usuários com e sem ingressos em duas abas", async () => {
   const workbook = createUsersWorkbook([

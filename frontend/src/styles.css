@@ -96,6 +96,8 @@ input:focus, select:focus, textarea:focus { outline: 3px solid rgba(247, 148, 29
 .secondary, .ghost { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; background: var(--navy); color: #fff; }
 .secondary:hover, .ghost:hover { background: var(--navy-deep); }
 .mini { min-height: 34px; background: var(--brick); color: white; }
+.mini.danger { background: var(--error); }
+.manual-payment-actions { display: grid; gap: 6px; justify-items: start; }
 .notice { margin: 12px 0; padding: 12px; border-left: 5px solid currentColor; font-weight: 700; background: var(--paper-dark); }
 .notice.success { color: var(--success); }.notice.error { color: var(--error); }.notice.alert, .notice.info { color: var(--alert); }
 .loading { min-height: 100vh; display: grid; place-items: center; color: var(--navy-deep); font: 700 2rem "Teko", sans-serif; }

@@ -1336,6 +1336,7 @@ function AdminPanel({ refresh }) {
   const [paymentHistoryPerson, setPaymentHistoryPerson] = useState(null);
   const [exportingUsers, setExportingUsers] = useState(false);
   const [exportingSales, setExportingSales] = useState(false);
+  const [undoingManualTicketId, setUndoingManualTicketId] = useState(null);
   const sortedUsers = useMemo(
     () => [...users].sort((first, second) => String(first.name || "").localeCompare(String(second.name || ""), "pt-BR", { sensitivity: "base" })),
     [users]
@@ -1445,6 +1446,21 @@ function AdminPanel({ refresh }) {
       setNotice({ type: "success", text: "Pagamento confirmado." });
     } catch (error) {
       setNotice({ type: "error", text: error.message });
+    }
+  }
+
+  async function undoManualPayment(ticket) {
+    if (!window.confirm(`Desfazer a baixa manual de ${ticket.participantName}?`)) return;
+    setUndoingManualTicketId(ticket.manualPaymentTicketId);
+    try {
+      await api(`/api/admin/tickets/${ticket.manualPaymentTicketId}/undo-manual`, { method: "POST", body: "{}" });
+      await load();
+      await refresh();
+      setNotice({ type: "success", text: "Baixa manual desfeita." });
+    } catch (error) {
+      setNotice({ type: "error", text: error.message });
+    } finally {
+      setUndoingManualTicketId(null);
     }
   }
 
@@ -1564,7 +1580,23 @@ function AdminPanel({ refresh }) {
                       <small>Valor pago: {ticket.hasPaidTickets ? formatCurrency(ticket.purchasePaidTotal) : "Nao se aplica"}</small>
                     </div>
                     <span className={`pill ${pill.className}`}>{pill.label}</span>
-                    {ticket.hasPaidTickets ? <span>{ticket.checkinCount > 0 ? "Presente" : "Nao presente"}</span> : <button className="mini" onClick={() => confirmTicket(ticket.latestRejectedTicketId || ticket.id)}>Confirmar</button>}
+                    {ticket.hasPaidTickets ? (
+                      <div className="manual-payment-actions">
+                        <span>{ticket.checkinCount > 0 ? "Presente" : "Nao presente"}</span>
+                        {ticket.manualPaymentTicketId && (
+                          <button
+                            type="button"
+                            className="mini danger"
+                            onClick={() => undoManualPayment(ticket)}
+                            disabled={undoingManualTicketId === ticket.manualPaymentTicketId}
+                          >
+                            {undoingManualTicketId === ticket.manualPaymentTicketId ? "Desfazendo..." : "Desfazer baixa"}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <button type="button" className="mini" onClick={() => confirmTicket(ticket.latestRejectedTicketId || ticket.id)}>Confirmar</button>
+                    )}
                   </div>
                 );
               })}

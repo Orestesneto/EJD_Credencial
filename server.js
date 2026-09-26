@@ -162,6 +162,37 @@ function isTicketPaid(ticket) {
   return ticket.status === "confirmed";
 }
 
+async function undoManualPayment(ticket, storage = db) {
+  if (ticket.mercadoPagoStatus !== "manual" || ticket.status !== "confirmed") {
+    const error = new Error("Este ingresso não possui baixa manual para desfazer.");
+    error.statusCode = 409;
+    throw error;
+  }
+  if (ticket.checkinAt) {
+    const error = new Error("Não é possível desfazer a baixa após o check-in.");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  ticket.status = ticket.manualPreviousStatus || "pending";
+  ticket.mercadoPagoStatus = ticket.manualPreviousMercadoPagoStatus || "pending";
+  ticket.mercadoPagoStatusDetail = ticket.manualPreviousMercadoPagoStatusDetail || null;
+  ticket.confirmedAt = ticket.manualPreviousConfirmedAt || null;
+  ticket.paidAt = ticket.manualPreviousPaidAt || null;
+  ticket.emailSentAt = ticket.manualPreviousEmailSentAt || null;
+  ticket.manualConfirmedBy = null;
+  ticket.manualConfirmedByName = null;
+  ticket.manualPreviousStatus = null;
+  ticket.manualPreviousMercadoPagoStatus = null;
+  ticket.manualPreviousMercadoPagoStatusDetail = null;
+  ticket.manualPreviousConfirmedAt = null;
+  ticket.manualPreviousPaidAt = null;
+  ticket.manualPreviousEmailSentAt = null;
+  ticket.updatedAt = now();
+  await storage.save("tickets", ticket);
+  return ticket;
+}
+
 function isExpiredPendingTicket(ticket) {
   if (ticket.status !== "pending" || !isMercadoPagoWaiting(ticket)) return false;
   const expiration = ticket.paymentExpiresAt
@@ -1566,6 +1597,7 @@ async function api(req, res, pathname) {
         rejectedCount: rejectedPayments.length,
         latestRejectedTicketId: latestRejectedTicket?.id || null,
         checkinCount: paidPersonTickets.filter((ticket) => ticket.checkinAt).length,
+        manualPaymentTicketId: byActivity.find((ticket) => ticket.mercadoPagoStatus === "manual" && isTicketPaid(ticket))?.id || null,
         paymentHistory: normalizedPaymentHistoryByPerson.get(
           latestTicket.userId || String(latestTicket.participantWhatsapp || "").replace(/\D/g, "") || latestTicket.id
         ) || []
@@ -1661,6 +1693,12 @@ async function api(req, res, pathname) {
     const tickets = await db.all("tickets");
     const ticket = tickets.find((item) => item.id === confirmMatch[1]);
     if (!ticket) return send(res, 404, { message: "Ingresso não encontrado." });
+    ticket.manualPreviousStatus = ticket.status || "pending";
+    ticket.manualPreviousMercadoPagoStatus = ticket.mercadoPagoStatus || "pending";
+    ticket.manualPreviousMercadoPagoStatusDetail = ticket.mercadoPagoStatusDetail || null;
+    ticket.manualPreviousConfirmedAt = ticket.confirmedAt || null;
+    ticket.manualPreviousPaidAt = ticket.paidAt || null;
+    ticket.manualPreviousEmailSentAt = ticket.emailSentAt || null;
     ticket.status = "confirmed";
     ticket.mercadoPagoStatus = "manual";
     ticket.confirmedAt = now();
@@ -1671,6 +1709,20 @@ async function api(req, res, pathname) {
     await db.save("tickets", ticket);
     await trySendPurchasedTicketsEmail([ticket]);
     return send(res, 200, { ticket: await ticketWithQr(ticket) });
+  }
+
+  const undoManualMatch = pathname.match(/^\/api\/admin\/tickets\/([^/]+)\/undo-manual$/);
+  if (undoManualMatch && req.method === "POST") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const tickets = await db.all("tickets");
+    const ticket = tickets.find((item) => item.id === undoManualMatch[1]);
+    if (!ticket) return send(res, 404, { message: "Ingresso não encontrado." });
+    try {
+      await undoManualPayment(ticket);
+      return send(res, 200, { message: "Baixa manual desfeita.", ticket });
+    } catch (error) {
+      return send(res, error.statusCode || 500, { message: error.message });
+    }
   }
 
   return send(res, 404, { message: "Rota não encontrada." });
@@ -1820,6 +1872,7 @@ if (process.env.NODE_ENV === "test") {
     db,
     isExpiredPendingTicket,
     isMercadoPagoWaiting,
-    isTicketPaid
+    isTicketPaid,
+    undoManualPayment
   };
 }
