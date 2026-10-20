@@ -1075,6 +1075,49 @@ async function trySendPurchasedTicketsEmail(tickets) {
   }
 }
 
+async function trySendPurchasedShirtEmail(order, { storage = db, transport } = {}) {
+  if (order.mercadoPagoStatus !== "approved" || order.emailSentAt) return { skipped: true };
+  if (!transport && (!SMTP_USER || !SMTP_PASS)) return { skipped: true };
+  try {
+    if (!isValidEmail(normalizeEmail(order.buyerEmail))) throw new Error("O comprador não possui um e-mail válido.");
+    const items = (order.items || []).map((item) => `${item.quantity}× ${item.model} — ${item.size}`).join("\n");
+    const amount = Number(order.total || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    const text = `Olá, ${order.buyerName || "comprador"}!\n\nPagamento aprovado. Sua compra de camisas está confirmada.\n\n${items}\n\nTotal pago: ${amount}\nForma de pagamento: ${order.paymentMethod === "pix" ? "Pix" : "Cartão de crédito"}\nPedido: ${order.orderId || order.id}\nPagamento: ${order.paymentId}\n\nAcompanhe seu pedido em Minhas camisas: ${APP_URL}`;
+    const transporter = transport || nodemailer.createTransport({
+      host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_PORT === 465,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 20000
+    });
+    const result = await transporter.sendMail({
+      from: { name: "Encontrão EJD — 25 Anos", address: SMTP_USER },
+      to: normalizeEmail(order.buyerEmail),
+      subject: "Compra de camisas confirmada — Encontrão 25 Anos",
+      text,
+      html: `<h1>Compra de camisas confirmada!</h1><p>${escapeXml(text).replace(/\n/g, "<br />")}</p>`,
+      messageId: `<ejd-shirts-${hash(order.id).slice(0, 48)}@${new URL(APP_URL).hostname}>`
+    });
+    order.emailSentAt = now();
+    order.emailMessageId = result.messageId || null;
+    order.emailLastError = null;
+    await storage.save("shirt_orders", order);
+    return { sent: true, id: result.messageId };
+  } catch (error) {
+    console.error("Falha ao enviar confirmação da camisa:", error.message);
+    order.emailLastError = error.message;
+    order.emailLastAttemptAt = now();
+    await storage.save("shirt_orders", order);
+    return { sent: false, error: error.message };
+  }
+}
+
+async function sendMercadoPagoShirtEmail(paymentId, options = {}) {
+  return withMercadoPagoPaymentLock(paymentId, async () => {
+    const storage = options.storage || db;
+    const orders = (await storage.all("shirt_orders")).filter((order) => String(order.paymentId) === String(paymentId));
+    for (const order of orders) await trySendPurchasedShirtEmail(order, { ...options, storage });
+  });
+}
+
 function mercadoPagoErrorMessage(data, fallback) {
   const cause = Array.isArray(data?.cause) ? data.cause : [];
   const details = cause
@@ -1196,9 +1239,9 @@ async function applyMercadoPagoPayment(payment, options = {}) {
     updatedCount += 1;
   }
 
-  // Storage injetado é usado pelos testes/integrações legadas apenas para ingressos.
+  // Alguns adaptadores legados podem não disponibilizar pedidos de camisas.
   let shirtOrders = [];
-  if (!options.storage) {
+  {
     try { shirtOrders = await storage.all("shirt_orders") || []; } catch (error) {
       mercadoPagoLog("pedidos de camisa indisponíveis durante sincronização", { error: error.message });
     }
@@ -1230,6 +1273,9 @@ async function applyMercadoPagoPayment(payment, options = {}) {
   if (paymentStatus === "approved" && hasUnsentApprovedTickets && options.sendEmail !== false) {
     const emailSender = options.emailSender || trySendPurchasedTicketsEmail;
     emailResult = await emailSender(relatedTickets);
+  }
+  if (paymentStatus === "approved" && options.sendEmail !== false) {
+    for (const order of relatedShirtOrders) await trySendPurchasedShirtEmail(order, { storage });
   }
 
   return { paymentId, reference, paymentStatus, relatedTickets, relatedShirtOrders, updatedCount, newlyApprovedCount, emailResult };
@@ -1511,6 +1557,9 @@ async function api(req, res, pathname) {
     const withQr = await Promise.all(tickets.map(ticketWithQr));
     let shirtOrders = [];
     try { shirtOrders = (await db.all("shirt_orders")).filter((order) => order.userId === auth.user.id); } catch {}
+    for (const order of shirtOrders.filter((item) => item.mercadoPagoStatus === "approved" && !item.emailSentAt)) {
+      await sendMercadoPagoShirtEmail(order.paymentId);
+    }
     return send(res, 200, { user: publicUser(auth.user), tickets: withQr, shirtOrders });
   }
 
@@ -1815,6 +1864,7 @@ async function api(req, res, pathname) {
       paymentExpiresAt: pix?.expiresAt || null, createdAt: now(), updatedAt: now()
     };
     await db.save("shirt_orders", order);
+    if (payment?.status === "approved") await sendMercadoPagoShirtEmail(order.paymentId);
     return send(res, 201, {
       order, quantity, subtotal, serviceFee, discount, discountRate, total, items, paymentMethod, pix,
       cardPayment: cardPayment ? { id: String(cardPayment.id), status: cardPayment.status, statusDetail: cardPayment.status_detail || null,
@@ -2256,6 +2306,10 @@ async function mercadoPagoWebhook(req, res, url) {
       newlyApproved: result.newlyApprovedCount
     });
     send(res, 200, { ok: true });
+    if (result.paymentStatus === "approved" && result.relatedShirtOrders.length) {
+      setImmediate(() => sendMercadoPagoShirtEmail(paymentId)
+        .catch((error) => console.error("Falha na fila de e-mail de camisas:", error.message)));
+    }
     if (result.paymentStatus === "approved" && result.relatedTickets.length) {
       setImmediate(() => {
         sendMercadoPagoTicketsEmail(paymentId, result.relatedTickets.map((ticket) => ticket.id), "webhook")
@@ -2353,6 +2407,8 @@ if (process.env.NODE_ENV === "test") {
     createShirtOrdersWorkbook,
     summarizeShirtOrders,
     createMercadoPagoCardPayment,
+    trySendPurchasedShirtEmail,
+    sendMercadoPagoShirtEmail,
     extractMercadoPagoPaymentId,
     mercadoPagoWebhook,
     mercadoPagoRequest,
