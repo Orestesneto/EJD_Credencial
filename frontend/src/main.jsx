@@ -260,6 +260,7 @@ function paymentStatusDetailLabel(value) {
     pending_challenge: "Aguardando autenticação do banco",
     pending_contingency: "Aguardando processamento",
     pending_review_manual: "Aguardando revisao manual",
+    expired: "Prazo de pagamento expirado",
     cc_rejected_bad_filled_card_number: "Cartao preenchido incorretamente",
     cc_rejected_bad_filled_date: "Data do cartao incorreta",
     cc_rejected_bad_filled_security_code: "Codigo de seguranca incorreto",
@@ -716,6 +717,7 @@ function BuyShirt({ refresh }) {
   const [config, setConfig] = useState(null);
   const [quantities, setQuantities] = useState({});
   const [selectedSku, setSelectedSku] = useState("unisex_PP");
+  const [paymentResult, setPaymentResult] = useState(null);
   const [selectedQuantity, setSelectedQuantity] = useState(1);
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [couponCode, setCouponCode] = useState("");
@@ -803,19 +805,25 @@ function BuyShirt({ refresh }) {
         body: JSON.stringify({ items: quantities, paymentMethod, cardPayment, couponCode: validatedCoupon?.code || "", checkoutRequestId: checkoutRequestIdRef.current })
       });
       checkoutRequestIdRef.current = "";
-      await refresh();
       if (data.pix?.qrCode) {
         setPixModal(data.pix);
         setNotice({ type: "success", text: "Pix gerado. Aguarde a confirmação do pagamento." });
       } else if (data.cardPayment) {
         setCardModal(false);
-        if (data.cardPayment.status === "pending" && data.cardPayment.statusDetail === "pending_challenge" && data.cardPayment.threeDSInfo?.externalResourceUrl) {
+        if (data.cardPayment.status === "pending" && data.cardPayment.statusDetail === "pending_challenge" && data.cardPayment.threeDSInfo?.externalResourceUrl && data.cardPayment.threeDSInfo?.creq) {
           setCardChallenge({ paymentId: data.cardPayment.id, ...data.cardPayment.threeDSInfo });
           setNotice({ type: "alert", text: "Confirme sua identidade na tela do banco para concluir o pagamento." });
         } else {
-          setNotice({ type: data.cardPayment.status === "approved" ? "success" : "alert", text: data.cardPayment.status === "approved" ? "Pagamento aprovado. Pedido de camisa confirmado." : `Pagamento ${paymentStatusLabel(data.cardPayment.status).toLowerCase()}.` });
+          setPaymentResult(data.cardPayment);
+          const detail = paymentStatusDetailLabel(data.cardPayment.statusDetail);
+          const guidance = data.cardPayment.statusDetail === "cc_rejected_high_risk"
+            ? " O Mercado Pago recusou a compra na análise de segurança. Confira os dados do titular e utilize outro cartão ou Pix."
+            : "";
+          setNotice({ type: data.cardPayment.status === "approved" ? "success" : "alert", text: data.cardPayment.status === "approved" ? "Pagamento aprovado. Pedido de camisa confirmado." : `Pagamento ${paymentStatusLabel(data.cardPayment.status).toLowerCase()}${detail ? `: ${detail}` : ""}.${guidance}` });
         }
       }
+      try { await refresh(); }
+      catch { setNotice({ type: "alert", text: "O pagamento foi processado, mas não foi possível atualizar a lista. Atualize a página para conferir seu pedido." }); }
     } catch (error) {
       if (cardPayment) setCardError(error.message);
       else setNotice({ type: "error", text: error.message });
@@ -886,10 +894,56 @@ function BuyShirt({ refresh }) {
         <button className="primary" disabled={loading || validatingCoupon} onClick={handlePayClick}>{loading ? "Abrindo pagamento..." : "Pagar"}</button>
       </div>
       <ShirtSizeGuide />
-      {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} />}
-      {cardModal && <CardPaymentModal publicKey={config?.mercadoPagoPublicKey} total={total} loading={loading} error={cardError} onSubmit={checkout} onClose={() => !loading && setCardModal(false)} maxInstallments={2} />}
-      {cardChallenge && <CardChallengeModal challenge={cardChallenge} onComplete={async () => { setCardChallenge(null); await refresh(); }} onClose={() => setCardChallenge(null)} />}
+      {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} onResult={(payment) => {
+        setPixModal(null);
+        setPaymentResult({ ...payment, paymentMethod: "pix" });
+        refresh().catch(() => setNotice({ type: "alert", text: "Atualize a página para conferir seus pedidos." }));
+      }} />}
+      {cardModal && <CardPaymentModal publicKey={config?.mercadoPagoPublicKey} total={total} loading={loading} error={cardError} onSubmit={checkout} onClose={() => !loading && setCardModal(false)} maxInstallments={12} />}
+      {cardChallenge && <CardChallengeModal challenge={cardChallenge} onComplete={async () => {
+        setPaymentResult({ status: "pending", statusDetail: "pending_contingency", id: cardChallenge.paymentId });
+        setCardChallenge(null);
+        await refresh();
+      }} onClose={() => setCardChallenge(null)} />}
+      {paymentResult && <CardPaymentResultModal payment={paymentResult} onClose={() => setPaymentResult(null)} />}
     </section>
+  );
+}
+
+function CardPaymentResultModal({ payment, onClose }) {
+  const pix = payment.paymentMethod === "pix";
+  const approved = payment.status === "approved";
+  const rejected = ["rejected", "cancelled", "refunded", "charged_back"].includes(payment.status);
+  const title = approved ? "Pagamento aprovado" : rejected ? "Pagamento não aprovado" : "Pagamento em processamento";
+  const guidance = {
+    cc_rejected_high_risk: "O Mercado Pago recusou a compra na análise de segurança. Confira os dados do titular e utilize outro cartão ou Pix.",
+    cc_rejected_insufficient_amount: "O cartão não possui limite disponível para esta compra. Utilize outro cartão ou Pix.",
+    cc_rejected_call_for_authorize: "Entre em contato com o banco para autorizar a compra.",
+    cc_rejected_card_disabled: "Verifique com o banco se o cartão está habilitado para compras online.",
+    cc_rejected_invalid_installments: "Escolha uma opção de parcelamento disponível para o cartão.",
+    cc_rejected_duplicated_payment: "Confira seu histórico antes de tentar novamente: foi identificado um pagamento duplicado.",
+    cc_rejected_max_attempts: "O limite de tentativas foi atingido. Utilize outro meio de pagamento.",
+    cc_rejected_3ds_challenge: "A autenticação com o banco não foi concluída. Confira a autorização no aplicativo do banco."
+  };
+  const reason = payment.statusDetail ? paymentStatusDetailLabel(payment.statusDetail) : "O Mercado Pago não informou um motivo específico.";
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="card-result-title">
+      <div className="modal confirm-modal">
+        <div className="modal-head">
+          <h3 id="card-result-title">{title}</h3>
+          <button type="button" className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
+        </div>
+        {approved ? <p>Seu pagamento foi aprovado e o pedido de camisa está confirmado.</p> : rejected ? <>
+          <p><strong>Motivo: </strong>{reason}</p>
+          <p>{pix ? "Este Pix não foi concluído. Confira o histórico no aplicativo do banco antes de gerar um novo pagamento." : guidance[payment.statusDetail] || "Confira os dados do cartão e do titular. Se a recusa persistir, consulte seu banco ou utilize outro cartão ou Pix."}</p>
+        </> : <>
+          <p>O pagamento ainda não foi aprovado. Aguarde a confirmação e acompanhe o status em Minhas camisas antes de realizar outra tentativa.</p>
+          {payment.statusDetail && <p>{reason}</p>}
+        </>}
+        {payment.id && <small>Pagamento: {payment.id}</small>}
+        <div className="modal-actions"><button type="button" className="primary" onClick={onClose}>Entendi</button></div>
+      </div>
+    </div>
   );
 }
 
@@ -1211,8 +1265,35 @@ function CardChallengeModal({ challenge, onComplete, onClose }) {
   );
 }
 
-function PixModal({ pix, onClose }) {
+function PixModal({ pix, onClose, onResult }) {
   const [copied, setCopied] = useState(false);
+  const [statusError, setStatusError] = useState("");
+  const resultRef = useRef(onResult);
+  useEffect(() => { resultRef.current = onResult; }, [onResult]);
+  useEffect(() => {
+    if (!pix.id || !resultRef.current) return undefined;
+    let cancelled = false;
+    let timer;
+    async function checkPayment() {
+      try {
+        const data = await api("/api/me");
+        if (cancelled) return;
+        setStatusError("");
+        const order = (data.shirtOrders || []).find((item) => String(item.paymentId) === String(pix.id));
+        const status = order?.mercadoPagoStatus;
+        if (["approved", "rejected", "cancelled", "refunded", "charged_back"].includes(status)) {
+          resultRef.current({ id: pix.id, status, statusDetail: order.mercadoPagoStatusDetail });
+          return;
+        }
+      } catch {
+        if (cancelled) return;
+        setStatusError("Não foi possível consultar o pagamento. Tentaremos novamente automaticamente.");
+      }
+      if (!cancelled) timer = setTimeout(checkPayment, 5000);
+    }
+    checkPayment();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [pix.id]);
 
   async function copyPix() {
     await navigator.clipboard.writeText(pix.qrCode);
@@ -1226,6 +1307,7 @@ function PixModal({ pix, onClose }) {
           <h3>Pagamento Pix</h3>
           <button className="ghost icon-button" onClick={onClose} aria-label="Fechar">X</button>
         </div>
+        {onResult && <p role="status">{statusError || "Aguardando pagamento. A confirmação aparecerá automaticamente após a aprovação do Pix."}</p>}
         {pix.qrCodeBase64 && <img className="pix-qr" src={`data:image/png;base64,${pix.qrCodeBase64}`} alt="QR Code Pix" />}
         <label>
           Pix copia e cola
