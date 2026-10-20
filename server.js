@@ -10,10 +10,14 @@ const ExcelJS = require("exceljs");
 const { neon } = require("@neondatabase/serverless");
 const { createClient } = require("@supabase/supabase-js");
 const mysql = require("mysql2/promise");
+const { rulesFor, parseRules, usageOrders, quoteCoupon } = require("./coupon-rules");
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, "data");
 const STATIC_DIR = path.join(__dirname, "frontend", "dist");
+const DEPLOY_VERSION = fs.existsSync(path.join(__dirname, "deploy-version.json"))
+  ? JSON.parse(fs.readFileSync(path.join(__dirname, "deploy-version.json"), "utf8")).version
+  : "development";
 const APP_URL = normalizeAppUrl(process.env.APP_URL) || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${PORT}`);
 const DATABASE_URL = normalizeDatabaseUrl(process.env.NEON_DATABASE_URL || process.env.DATABASE_URL);
 const SUPABASE_URL = normalizeSupabaseUrl(process.env.SUPABASE_URL);
@@ -124,6 +128,61 @@ function couponUsageCount(coupon, orders) {
 function couponHasReachedLimit(coupon, orders) {
   const maxUses = Number.parseInt(coupon.maxUses, 10);
   return Number.isInteger(maxUses) && maxUses > 0 && couponUsageCount(coupon, orders) >= maxUses;
+}
+
+async function allCouponOrders() {
+  const [shirts, tickets] = await Promise.all([db.all("shirt_orders"), db.all("tickets")]);
+  return usageOrders(shirts, tickets);
+}
+
+function validatedCouponRules(body) {
+  const rules = parseRules(body);
+  const allowed = rules.productType === "ticket" ? [...ticketTypes] : Object.keys(shirtOptions);
+  if (rules.item !== "all" && !allowed.includes(rules.item)) throw new Error("Selecione um item válido para este produto.");
+  return rules;
+}
+
+const couponCheckoutLocks = new Set();
+async function lockCoupon(code, res) {
+  if (couponCheckoutLocks.has(code)) throw new Error("Este cupom está sendo utilizado em outro pagamento. Tente novamente em instantes.");
+  couponCheckoutLocks.add(code);
+  let connection;
+  const lockName = `ejd-coupon-${hash(code).slice(0, 40)}`;
+  try {
+    if (mysqlPool) {
+      await ensureMysqlReady();
+      connection = await mysqlPool.getConnection();
+      const [rows] = await connection.execute("SELECT GET_LOCK(?, 0) AS acquired", [lockName]);
+      if (Number(rows[0].acquired) !== 1) throw new Error("Cupom em uso. Tente novamente em instantes.");
+    }
+  } catch (error) {
+    connection?.release();
+    couponCheckoutLocks.delete(code);
+    throw error;
+  }
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    try { if (connection) await connection.execute("SELECT RELEASE_LOCK(?)", [lockName]); }
+    finally { connection?.release(); couponCheckoutLocks.delete(code); }
+  };
+  res.couponRelease = release;
+}
+
+async function resolveCoupon(body, userId, productType, orderId, res) {
+  if (body.coupons !== undefined || body.couponCodes !== undefined || (body.couponCode !== undefined && typeof body.couponCode !== "string")) throw new Error("Utilize apenas um cupom por compra.");
+  const code = normalizeCouponCode(body.couponCode);
+  if (!code) return null;
+  if (res) await lockCoupon(code, res);
+  const coupon = (await db.all("coupons")).find((item) => item.code === code && item.active !== false);
+  if (!coupon) throw new Error("Cupom de desconto inválido ou inativo.");
+  const rules = rulesFor(coupon);
+  if (rules.productType !== productType) throw new Error(`Este cupom é válido apenas para ${rules.productType === "ticket" ? "ingressos" : "camisas"}.`);
+  const orders = (await allCouponOrders()).filter((order) => !orderId || order.orderId !== orderId);
+  if (couponHasReachedLimit(coupon, orders)) throw new Error("Este cupom atingiu o limite de utilizações.");
+  if (rules.oncePerAccount && orders.some((order) => order.userId === userId && (order.couponId === coupon.id || order.couponCode === coupon.code) && (order.status === "confirmed" || isMercadoPagoWaiting(order)))) throw new Error("Este cupom já foi utilizado nesta conta ou está reservado em um pagamento pendente.");
+  return rules;
 }
 
 function isValidEmail(value) {
@@ -1483,16 +1542,22 @@ async function api(req, res, pathname) {
     const quantity = ticketItems.reduce((sum, item) => sum + item.quantity, 0);
     if (quantity < 1) return send(res, 400, { message: "Selecione pelo menos 1 ingresso." });
     if (quantity > 20) return send(res, 400, { message: "Selecione no máximo 20 ingressos por compra." });
-    const subtotal = Number(ticketItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0).toFixed(2));
-    const serviceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
-    const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
-    const total = Number((subtotal + serviceFee).toFixed(2));
     const orderId = checkoutRequestId
       ? `ord_${hash(`${auth.user.id}:${checkoutRequestId}`).slice(0, 40)}`
       : id("ord");
+    let coupon, quote;
+    try {
+      coupon = await resolveCoupon(body, auth.user.id, "ticket", orderId, res);
+      quote = quoteCoupon(coupon, "ticket", ticketItems, paymentMethod);
+    } catch (error) { return send(res, 400, { message: error.message }); }
+    const { subtotal, serviceFee, discount, total } = quote;
     const allTickets = await db.all("tickets");
     const existingOrderTickets = allTickets.filter((ticket) => ticket.userId === auth.user.id && ticket.orderId === orderId);
     if (existingOrderTickets.length) {
+      if (existingOrderTickets.every((ticket) => ticket.paymentProvider === "coupon")) {
+        return send(res, 200, { tickets: existingOrderTickets, quantity: existingOrderTickets.length, total: 0,
+          cardPayment: { id: existingOrderTickets[0].paymentId, status: "approved", statusDetail: "accredited" }, message: "Pedido existente recuperado." });
+      }
       const existingPaymentId = existingOrderTickets.find((ticket) => ticket.paymentId)?.paymentId;
       if (!existingPaymentId) return send(res, 409, { message: "Pedido existente ainda sem pagamento. Aguarde e atualize a página." });
       try {
@@ -1511,6 +1576,7 @@ async function api(req, res, pathname) {
           quantity,
           subtotal,
           serviceFee,
+          discount,
           total,
           items: ticketItems,
           paymentMethod,
@@ -1537,7 +1603,10 @@ async function api(req, res, pathname) {
       }
     }
     const usedCodes = new Set(allTickets.map((ticket) => ticket.code));
-    const tickets = ticketItems.flatMap((item) => Array.from({ length: item.quantity }, () => ({
+    let unitIndex = 0;
+    const tickets = ticketItems.flatMap((item) => Array.from({ length: item.quantity }, () => {
+      const unit = quote.units[unitIndex++];
+      return ({
       id: checkoutRequestId
         ? `tkt_${hash(`${orderId}:${item.ticketType}:${usedCodes.size}`).slice(0, 40)}`
         : id("tkt"),
@@ -1551,19 +1620,25 @@ async function api(req, res, pathname) {
       ticketType: item.ticketType,
       saleLot: saleLots.has(settings.currentSaleLot) ? settings.currentSaleLot : "relampago",
       originalPrice: unitPrice,
-      price: item.unitPrice,
-      serviceFee: Number((item.unitPrice * serviceFeeRate).toFixed(2)),
+      price: unit.price,
+      discount: unit.discount,
+      couponId: coupon?.id || null,
+      couponCode: coupon?.code || null,
+      serviceFee: unit.serviceFee,
       paymentMethod,
       code: createTicketCode(usedCodes),
       checkinAt: null,
       paymentId: null,
       createdAt: now(),
       updatedAt: now()
-    })));
+    }); }));
     let pix = null;
     let cardPayment = null;
     try {
-      if (paymentMethod === "pix") {
+      if (coupon && total === 0) {
+        cardPayment = { id: `coupon_${orderId}`, status: "approved", status_detail: "accredited", date_approved: now() };
+        for (const ticket of tickets) ticket.paymentProvider = "coupon";
+      } else if (paymentMethod === "pix") {
         pix = await createMercadoPagoPixPayment(auth.user, orderId, quantity, total, ticketItems);
         if (!pix) return send(res, 400, { message: "Mercado Pago nao configurado para gerar Pix." });
         if (pix) {
@@ -1617,6 +1692,7 @@ async function api(req, res, pathname) {
       quantity,
       subtotal,
       serviceFee,
+      discount,
       total,
       items: ticketItems,
       paymentMethod,
@@ -1636,12 +1712,11 @@ async function api(req, res, pathname) {
 
   if (pathname === "/api/coupons/validate" && req.method === "POST") {
     if (!auth) return send(res, 401, { message: "Sessão inválida." });
-    const code = normalizeCouponCode(body.code);
-    const coupon = (await db.all("coupons")).find((item) => item.code === code && item.active !== false);
-    if (!coupon) return send(res, 404, { message: "Cupom de desconto inválido ou inativo." });
-    const shirtOrders = await db.all("shirt_orders");
-    if (couponHasReachedLimit(coupon, shirtOrders)) return send(res, 409, { message: "Este cupom atingiu o limite de utilizações." });
-    return send(res, 200, { valid: true, code: coupon.code, maxUses: coupon.maxUses || null, usageCount: couponUsageCount(coupon, shirtOrders) });
+    try {
+      const coupon = await resolveCoupon({ ...body, couponCode: body.code }, auth.user.id, body.productType || "shirt");
+      if (!coupon) throw new Error("Informe um cupom.");
+      return send(res, 200, { valid: true, code: coupon.code, coupon });
+    } catch (error) { return send(res, 400, { message: error.message }); }
   }
 
   if (pathname === "/api/shirts/checkout" && req.method === "POST") {
@@ -1657,13 +1732,9 @@ async function api(req, res, pathname) {
     const settings = (await db.all("settings")).find((item) => item.id === "event");
     if (settings.shirtSalesClosed) return send(res, 403, { message: "Venda de camisas fechada." });
     const paymentMethod = body.paymentMethod === "credit_card" ? "credit_card" : "pix";
-    const couponCode = normalizeCouponCode(body.couponCode);
     let coupon = null;
-    if (couponCode) {
-      coupon = (await db.all("coupons")).find((item) => item.code === couponCode && item.active !== false);
-      if (!coupon) return send(res, 400, { message: "Cupom de desconto inválido ou inativo." });
-      if (couponHasReachedLimit(coupon, await db.all("shirt_orders"))) return send(res, 409, { message: "Este cupom atingiu o limite de utilizações." });
-    }
+    try { coupon = await resolveCoupon(body, auth.user.id, "shirt", `shr_${hash(`${auth.user.id}:${checkoutRequestId}`).slice(0, 40)}`, res); }
+    catch (error) { return send(res, 400, { message: error.message }); }
     const unitPrice = numberOrDefault(settings.shirtPrice, 60);
     const requestedItems = body.items && typeof body.items === "object" ? body.items : {};
     const items = Object.entries(shirtOptions).map(([sku, option]) => ({
@@ -1675,13 +1746,11 @@ async function api(req, res, pathname) {
     const quantity = items.reduce((sum, item) => sum + item.quantity, 0);
     if (quantity < 1) return send(res, 400, { message: "Selecione pelo menos 1 camisa." });
     if (quantity > 20) return send(res, 400, { message: "Selecione no máximo 20 camisas por compra." });
-    const subtotal = Number((unitPrice * quantity).toFixed(2));
-    const baseServiceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
-    const serviceFeeRate = coupon ? 0 : baseServiceFeeRate;
-    const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
-    const discountRate = coupon ? 0.10 : 0;
-    const discount = Number((subtotal * discountRate).toFixed(2));
-    const total = Number((subtotal + serviceFee - discount).toFixed(2));
+    let quote;
+    try { quote = quoteCoupon(coupon, "shirt", items, paymentMethod); }
+    catch (error) { return send(res, 400, { message: error.message }); }
+    const { subtotal, serviceFee, discount, total } = quote;
+    const discountRate = coupon ? coupon.discountPercent / 100 : 0;
     const orderId = `shr_${hash(`${auth.user.id}:${checkoutRequestId}`).slice(0, 40)}`;
     const allOrders = await db.all("shirt_orders");
     const existing = allOrders.find((order) => order.userId === auth.user.id && order.orderId === orderId);
@@ -1690,7 +1759,9 @@ async function api(req, res, pathname) {
     let pix = null;
     let cardPayment = null;
     try {
-      if (paymentMethod === "pix") {
+      if (coupon && total === 0) {
+        cardPayment = { id: `coupon_${orderId}`, status: "approved", status_detail: "accredited", date_approved: now() };
+      } else if (paymentMethod === "pix") {
         pix = await createMercadoPagoPixPayment(auth.user, orderId, quantity, total, items, "shirt");
         if (!pix) return send(res, 400, { message: "Mercado Pago não configurado para gerar Pix." });
       } else {
@@ -1704,6 +1775,7 @@ async function api(req, res, pathname) {
       id: id("shirt"), productType: "shirt", orderId, userId: auth.user.id, buyerName: auth.user.name,
       buyerEmail: auth.user.email, buyerWhatsapp: auth.user.whatsapp, items, quantity,
       unitPrice, subtotal, serviceFee, discount, discountRate, couponCode: coupon?.code || null, couponId: coupon?.id || null, total, paymentMethod,
+      paymentProvider: coupon && total === 0 ? "coupon" : "mercadopago",
       paymentId: String(payment?.id || "") || null,
       mercadoPagoStatus: payment?.status || "pending",
       mercadoPagoStatusDetail: payment?.status_detail || payment?.statusDetail || null,
@@ -1931,9 +2003,9 @@ async function api(req, res, pathname) {
   if (pathname === "/api/admin/coupons" && req.method === "GET") {
     if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
     const coupons = await db.all("coupons");
-    const orders = await db.all("shirt_orders");
+    const orders = await allCouponOrders();
     return send(res, 200, { coupons: coupons.map((coupon) => ({
-      ...coupon,
+      ...rulesFor(coupon),
       usageCount: couponUsageCount(coupon, orders),
       limitReached: couponHasReachedLimit(coupon, orders),
       usages: orders.filter((order) => (order.couponId === coupon.id || order.couponCode === coupon.code) && (order.status === "confirmed" || isMercadoPagoWaiting(order))).map((order) => ({
@@ -1946,14 +2018,28 @@ async function api(req, res, pathname) {
   if (pathname === "/api/admin/coupons" && req.method === "POST") {
     if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
     const code = normalizeCouponCode(body.code);
-    const maxUses = Number.parseInt(body.maxUses, 10);
     if (!/^[A-Z0-9_-]{3,30}$/.test(code)) return send(res, 400, { message: "Informe um cupom com 3 a 30 letras, números, _ ou -." });
-    if (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 100000) return send(res, 400, { message: "Informe uma quantidade de usos entre 1 e 100.000." });
+    let rules;
+    try { rules = validatedCouponRules(body); }
+    catch (error) { return send(res, 400, { message: error.message }); }
     const coupons = await db.all("coupons");
     if (coupons.some((coupon) => coupon.code === code)) return send(res, 409, { message: "Este cupom já está cadastrado." });
-    const coupon = { id: id("coupon"), code, maxUses, active: true, createdAt: now(), updatedAt: now() };
+    const coupon = { id: id("coupon"), code, ...rules, active: true, createdAt: now(), updatedAt: now() };
     await db.save("coupons", coupon);
     return send(res, 201, { coupon });
+  }
+
+  const couponRulesMatch = pathname.match(/^\/api\/admin\/coupons\/([^/]+)\/rules$/);
+  if (couponRulesMatch && req.method === "PUT") {
+    if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
+    const coupon = (await db.all("coupons")).find((item) => item.id === couponRulesMatch[1]);
+    if (!coupon) return send(res, 404, { message: "Cupom não encontrado." });
+    let rules;
+    try { rules = validatedCouponRules(body); }
+    catch (error) { return send(res, 400, { message: error.message }); }
+    Object.assign(coupon, rules, { updatedAt: now() });
+    await db.save("coupons", coupon);
+    return send(res, 200, { coupon });
   }
 
   const couponStatusMatch = pathname.match(/^\/api\/admin\/coupons\/([^/]+)\/status$/);
@@ -1970,8 +2056,9 @@ async function api(req, res, pathname) {
   const couponLimitMatch = pathname.match(/^\/api\/admin\/coupons\/([^/]+)\/limit$/);
   if (couponLimitMatch && req.method === "PUT") {
     if (!requireRole(auth, ["admin"])) return send(res, 403, { message: "Acesso negado." });
-    const maxUses = Number.parseInt(body.maxUses, 10);
-    if (!Number.isInteger(maxUses) || maxUses < 1 || maxUses > 100000) return send(res, 400, { message: "Informe uma quantidade de usos entre 1 e 100.000." });
+    let maxUses;
+    try { maxUses = parseRules({ maxUses: body.maxUses }).maxUses; }
+    catch (error) { return send(res, 400, { message: error.message }); }
     const coupon = (await db.all("coupons")).find((item) => item.id === couponLimitMatch[1]);
     if (!coupon) return send(res, 404, { message: "Cupom não encontrado." });
     coupon.maxUses = maxUses;
@@ -2200,9 +2287,12 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, APP_URL);
     if (url.pathname === "/health") {
       if (mysqlPool) await ensureMysqlReady();
-      return send(res, 200, { ok: true, storage: mysqlPool ? "mysql" : neonSql ? "neon" : supabase ? "supabase" : "local" });
+      return send(res, 200, { ok: true, version: DEPLOY_VERSION, storage: mysqlPool ? "mysql" : neonSql ? "neon" : supabase ? "supabase" : "local" });
     }
-    if (url.pathname.startsWith("/api/")) return api(req, res, url.pathname);
+    if (url.pathname.startsWith("/api/")) {
+      try { return await api(req, res, url.pathname); }
+      finally { await res.couponRelease?.(); }
+    }
     if (url.pathname === "/webhook/mercadopago") return mercadoPagoWebhook(req, res, url);
     return serveStatic(req, res, url.pathname);
   } catch (error) {

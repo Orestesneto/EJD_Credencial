@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Html5Qrcode } from "html5-qrcode";
 import "./styles.css";
+import { couponTotals, couponBenefit } from "./coupons.js";
 
 const tokenKey = "ejd_token";
 const confirmedPaymentSeenKey = "ejd_confirmed_payment_seen";
@@ -475,6 +476,9 @@ async function downloadTicket(ticket) {
 }
 
 function BuyTicket({ refresh }) {
+  const [couponCode, setCouponCode] = useState("");
+  const [validatedCoupon, setValidatedCoupon] = useState(null);
+  const [validatingCoupon, setValidatingCoupon] = useState(false);
   const checkoutRequestIdRef = useRef("");
   const checkoutInFlightRef = useRef(false);
   const [config, setConfig] = useState(null);
@@ -502,9 +506,21 @@ function BuyTicket({ refresh }) {
   };
   const quantity = Object.values(ticketQuantities).reduce((sum, value) => sum + value, 0);
   const subtotal = ticketTypeOptions.reduce((sum, option) => sum + ticketTypePrices[option.value] * ticketQuantities[option.value], 0);
-  const serviceFeeRate = paymentMethod === "credit_card" ? 0.08 : 0.01;
-  const serviceFee = subtotal * serviceFeeRate;
-  const total = subtotal + serviceFee;
+  const { discount, serviceFee, total, appliedUnits } = couponTotals(validatedCoupon, ticketTypeOptions.map((option) => ({ key: option.value, quantity: ticketQuantities[option.value], unitPrice: ticketTypePrices[option.value] })), paymentMethod);
+
+  async function validateCoupon() {
+    setValidatingCoupon(true);
+    try {
+      const data = await api("/api/coupons/validate", { method: "POST", body: JSON.stringify({ code: couponCode, productType: "ticket" }) });
+      const quote = couponTotals(data.coupon, ticketTypeOptions.map((option) => ({ key: option.value, quantity: ticketQuantities[option.value], unitPrice: ticketTypePrices[option.value] })), paymentMethod);
+      if (!quote.appliedUnits) throw new Error("Selecione os ingressos aos quais o cupom se aplica.");
+      setCouponCode(data.code);
+      setValidatedCoupon(data.coupon);
+      checkoutRequestIdRef.current = "";
+      setNotice({ type: "success", text: `Cupom ${data.code} aplicado.` });
+    } catch (error) { setValidatedCoupon(null); setNotice({ type: "error", text: error.message }); }
+    finally { setValidatingCoupon(false); }
+  }
 
   useEffect(() => {
     api("/api/config").then(setConfig).catch((error) => setNotice({ type: "error", text: error.message }));
@@ -518,6 +534,7 @@ function BuyTicket({ refresh }) {
   }
 
   function handlePayClick() {
+    if (validatedCoupon && !appliedUnits) return setNotice({ type: "error", text: "O cupom não se aplica aos ingressos selecionados. Remova ou altere o cupom." });
     if (quantity <= 0) {
       setNotice({ type: "error", text: "Selecione pelo menos 1 ingresso." });
       return;
@@ -535,6 +552,7 @@ function BuyTicket({ refresh }) {
   }
 
   function beginCheckout() {
+    if (total === 0 && validatedCoupon) { checkout(); return; }
     if (paymentMethod === "credit_card") {
       setCardError("");
       setCardModal(true);
@@ -557,6 +575,7 @@ function BuyTicket({ refresh }) {
         method: "POST",
         body: JSON.stringify({
           items: ticketQuantities,
+          couponCode: validatedCoupon?.code || "",
           paymentMethod,
           cardPayment,
           checkoutRequestId: checkoutRequestIdRef.current
@@ -608,6 +627,7 @@ function BuyTicket({ refresh }) {
               <span>Subtotal</span>
               <strong>R$ {subtotal.toFixed(2).replace(".", ",")}</strong>
             </div>
+            {validatedCoupon && <div><span>Desconto do cupom</span><strong>− {formatCurrency(discount)}</strong></div>}
             <div>
               <span>Taxa de Serviço Web</span>
               <strong>R$ {serviceFee.toFixed(2).replace(".", ",")}</strong>
@@ -645,10 +665,19 @@ function BuyTicket({ refresh }) {
             </label>
           </fieldset>
         </div>
-        <button className="primary" disabled={loading} onClick={handlePayClick}>
+        <button className="primary" disabled={loading || validatingCoupon} onClick={handlePayClick}>
           {loading ? "Abrindo pagamento..." : "Pagar"}
         </button>
       </div>
+      <fieldset className="coupon-box ticket-coupon-box" disabled={loading || validatingCoupon}>
+        <legend>Cupom de desconto</legend>
+        <div className="coupon-input-row">
+          <input aria-label="Cupom de desconto dos ingressos" aria-describedby="ticket-coupon-help" value={couponCode} onChange={(event) => { setCouponCode(event.target.value.toUpperCase()); setValidatedCoupon(null); checkoutRequestIdRef.current = ""; }} placeholder="Digite o cupom" />
+          <button type="button" className="secondary" onClick={validateCoupon}>Aplicar cupom</button>
+          {validatedCoupon && <button type="button" className="secondary" onClick={() => { setCouponCode(""); setValidatedCoupon(null); checkoutRequestIdRef.current = ""; }}>Remover</button>}
+        </div>
+        <small id="ticket-coupon-help">{validatedCoupon ? `Cupom ${validatedCoupon.code}: ${couponBenefit(validatedCoupon)} em ${appliedUnits} unidade(s). Demais ingressos com preço normal.` : "Aplique um cupom por compra. O desconto será exibido no resumo."}</small>
+      </fieldset>
       <div className="fee-notes">
         <p>* Pix: taxa de serviço de 1%.</p>
         <p>** Cartão de crédito: taxa de serviço de 8%.</p>
@@ -690,7 +719,7 @@ function BuyShirt({ refresh }) {
   const [selectedQuantity, setSelectedQuantity] = useState(1);
   const [paymentMethod, setPaymentMethod] = useState("pix");
   const [couponCode, setCouponCode] = useState("");
-  const [validatedCoupon, setValidatedCoupon] = useState("");
+  const [validatedCoupon, setValidatedCoupon] = useState(null);
   const [validatingCoupon, setValidatingCoupon] = useState(false);
   const [pixModal, setPixModal] = useState(null);
   const [cardModal, setCardModal] = useState(false);
@@ -707,11 +736,7 @@ function BuyShirt({ refresh }) {
   const unitPrice = Number(config?.settings?.shirtPrice || 0);
   const quantity = Object.values(quantities).reduce((sum, value) => sum + value, 0);
   const subtotal = unitPrice * quantity;
-  const serviceFeeRate = validatedCoupon ? 0 : (paymentMethod === "credit_card" ? 0.08 : 0.01);
-  const serviceFee = Number((subtotal * serviceFeeRate).toFixed(2));
-  const discountRate = validatedCoupon ? 0.10 : 0;
-  const discount = Number((subtotal * discountRate).toFixed(2));
-  const total = Number((subtotal + serviceFee - discount).toFixed(2));
+  const { discount, serviceFee, total, appliedUnits } = couponTotals(validatedCoupon, Object.keys(shirtOptions).map((key) => ({ key, quantity: quantities[key] || 0, unitPrice })), paymentMethod);
 
   useEffect(() => {
     api("/api/config").then(setConfig).catch((error) => setNotice({ type: "error", text: error.message }));
@@ -736,6 +761,8 @@ function BuyShirt({ refresh }) {
 
   function handlePayClick() {
     if (!quantity) return setNotice({ type: "error", text: "Selecione pelo menos 1 camisa." });
+    if (validatedCoupon && !appliedUnits) return setNotice({ type: "error", text: "O cupom não se aplica às camisas selecionadas. Remova ou altere o cupom." });
+    if (total === 0 && validatedCoupon) { checkout(); return; }
     if (paymentMethod === "credit_card") {
       setCardError("");
       setCardModal(true);
@@ -748,12 +775,15 @@ function BuyShirt({ refresh }) {
     if (!couponCode.trim()) return setNotice({ type: "error", text: "Informe o cupom de desconto." });
     setValidatingCoupon(true);
     try {
-      const data = await api("/api/coupons/validate", { method: "POST", body: JSON.stringify({ code: couponCode }) });
+      const data = await api("/api/coupons/validate", { method: "POST", body: JSON.stringify({ code: couponCode, productType: "shirt" }) });
+      const quote = couponTotals(data.coupon, Object.keys(shirtOptions).map((key) => ({ key, quantity: quantities[key] || 0, unitPrice })), paymentMethod);
+      if (!quote.appliedUnits) throw new Error("Selecione as camisas às quais o cupom se aplica.");
       setCouponCode(data.code);
-      setValidatedCoupon(data.code);
+      setValidatedCoupon(data.coupon);
+      checkoutRequestIdRef.current = "";
       setNotice({ type: "success", text: `Cupom ${data.code} validado.` });
     } catch (error) {
-      setValidatedCoupon("");
+      setValidatedCoupon(null);
       setNotice({ type: "error", text: error.message });
     } finally {
       setValidatingCoupon(false);
@@ -770,7 +800,7 @@ function BuyShirt({ refresh }) {
     try {
       const data = await api("/api/shirts/checkout", {
         method: "POST",
-        body: JSON.stringify({ items: quantities, paymentMethod, cardPayment, couponCode: validatedCoupon, checkoutRequestId: checkoutRequestIdRef.current })
+        body: JSON.stringify({ items: quantities, paymentMethod, cardPayment, couponCode: validatedCoupon?.code || "", checkoutRequestId: checkoutRequestIdRef.current })
       });
       checkoutRequestIdRef.current = "";
       await refresh();
@@ -798,17 +828,14 @@ function BuyShirt({ refresh }) {
   return (
     <section className="panel">
       <h2>Comprar camisa</h2>
-      <div className="shirt-deadline-alert" role="alert">
-        <strong>Atenção!</strong>
-        <span>Os pedidos de camisas acontecerão somente até o dia 15 de outubro.</span>
-      </div>
-      <Notice notice={notice} />
+    
+    
       <div className="checkout">
         <div className="checkout-info">
           <div className="price-summary">
             <div><span>Camisas</span><strong>{quantity}</strong></div>
             <div><span>Subtotal</span><strong>R$ {subtotal.toFixed(2).replace(".", ",")}</strong></div>
-            <div><span>Taxa de serviço ({Math.round(serviceFeeRate * 100)}%)</span><strong>R$ {serviceFee.toFixed(2).replace(".", ",")}</strong></div>
+            <div><span>Taxa de serviço</span><strong>R$ {serviceFee.toFixed(2).replace(".", ",")}</strong></div>
             {validatedCoupon && <div><span>Desconto do cupom</span><strong>- R$ {discount.toFixed(2).replace(".", ",")}</strong></div>}
             <div className="price-total"><span>Total</span><strong>R$ {total.toFixed(2).replace(".", ",")}</strong></div>
           </div>
@@ -846,16 +873,17 @@ function BuyShirt({ refresh }) {
             <label><input type="radio" name="shirtPaymentMethod" value="pix" checked={paymentMethod === "pix"} onChange={(event) => setPaymentMethod(event.target.value)} /> Pix</label>
             <label><input type="radio" name="shirtPaymentMethod" value="credit_card" checked={paymentMethod === "credit_card"} onChange={(event) => setPaymentMethod(event.target.value)} /> Cartão de crédito</label>
           </fieldset>
-          <fieldset className="coupon-box">
+          <fieldset className="coupon-box" disabled={loading || validatingCoupon}>
             <legend>Cupom de desconto</legend>
             <div className="coupon-input-row">
-              <input value={couponCode} onChange={(event) => { setCouponCode(event.target.value.toUpperCase()); setValidatedCoupon(""); }} placeholder="Digite o cupom" />
+              <input aria-label="Cupom de desconto das camisas" value={couponCode} onChange={(event) => { setCouponCode(event.target.value.toUpperCase()); setValidatedCoupon(null); checkoutRequestIdRef.current = ""; }} placeholder="Digite o cupom" />
               <button type="button" className="secondary" onClick={validateCoupon} disabled={validatingCoupon}>{validatingCoupon ? "Validando..." : "Validar"}</button>
             </div>
-            <small>{validatedCoupon ? `Cupom aplicado: ${validatedCoupon}. Desconto de 10% no total das camisas, sem taxa de serviço, no Pix ou cartão de crédito.` : "Sem cupom: taxa de 1% no Pix ou 8% no cartão."}</small>
+            {validatedCoupon && <button type="button" className="secondary" onClick={() => { setCouponCode(""); setValidatedCoupon(null); checkoutRequestIdRef.current = ""; }}>Remover cupom</button>}
+            <small>{validatedCoupon ? `Cupom ${validatedCoupon.code}: ${couponBenefit(validatedCoupon)} em ${appliedUnits} unidade(s).` : "Aplique um cupom por compra. Sem cupom: taxa de 1% no Pix ou 8% no cartão."}</small>
           </fieldset>
         </div>
-        <button className="primary" disabled={loading} onClick={handlePayClick}>{loading ? "Abrindo pagamento..." : "Pagar"}</button>
+        <button className="primary" disabled={loading || validatingCoupon} onClick={handlePayClick}>{loading ? "Abrindo pagamento..." : "Pagar"}</button>
       </div>
       <ShirtSizeGuide />
       {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} />}
@@ -1618,6 +1646,37 @@ function PaymentHistoryModal({ person, onClose }) {
   );
 }
 
+const defaultCouponRules = { productType: "shirt", item: "all", maxUnits: null, maxUses: 1, oncePerAccount: false, discountPercent: 10, discountType: "percentage", fixedPrice: null, waiveServiceFee: true };
+const singleTicket30Rules = { ...defaultCouponRules, productType: "ticket", item: "inteiro", maxUnits: 1, maxUses: null, oncePerAccount: true, discountType: "fixed_price", fixedPrice: 30 };
+
+function CouponRuleFields({ value, onChange }) {
+  const update = (key, next) => onChange({ ...value, [key]: next });
+  const shirtItems = [
+    ...["PP", "P", "M", "G", "GG"].map((size) => [`unisex_${size}`, `Unissex — ${size}`]),
+    ...["P", "M", "G", "GG", "XGG"].map((size) => [`babylook_${size}`, `Babylook — ${size}`]),
+    ...[2, 4, 6, 8, 10, 12, 14].map((size) => [`infantil_${size}`, `Infantil — ${size} anos`])
+  ];
+  const items = value.productType === "ticket" ? [["inteiro", "Inteiro"], ["meia", "Meia"], ["social", "Social"]] : shirtItems;
+  return <div className="coupon-rules-grid">
+    <label>Válido para<select value={value.productType} onChange={(event) => onChange({ ...value, productType: event.target.value, item: "all" })}><option value="ticket">Ingressos</option><option value="shirt">Camisas</option></select></label>
+    <label>Item com desconto<select value={value.item} onChange={(event) => update("item", event.target.value)}><option value="all">Todos os itens do produto</option>{items.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></label>
+    <label>Tipo de desconto<select value={value.discountType} onChange={(event) => onChange({ ...value, discountType: event.target.value, discountPercent: value.discountPercent || 10, fixedPrice: value.fixedPrice ?? 30 })}><option value="percentage">Percentual de desconto</option><option value="fixed_price">Preço fixo por unidade</option></select></label>
+    {value.discountType === "fixed_price"
+      ? <label>Preço final do item (R$)<input required type="number" min="0.01" max="100000" step="0.01" value={value.fixedPrice ?? ""} onChange={(event) => update("fixedPrice", event.target.value)} /><small>A taxa só é removida se a isenção estiver marcada. Nunca aumenta o preço normal.</small></label>
+      : <label>Desconto (%)<input required type="number" min="0.01" max="100" step="0.01" value={value.discountPercent} onChange={(event) => update("discountPercent", event.target.value)} /></label>}
+    <label>Unidades por compra<select value={value.maxUnits == null ? "unlimited" : "fixed"} onChange={(event) => update("maxUnits", event.target.value === "unlimited" ? null : 1)}><option value="unlimited">Todas as unidades elegíveis</option><option value="fixed">Quantidade fixa</option></select>{value.maxUnits != null && <input aria-label="Máximo de unidades com desconto por compra" required type="number" min="1" max="100000" step="1" value={value.maxUnits} onChange={(event) => update("maxUnits", event.target.value)} />}</label>
+    <label>Disponibilidade do cupom<select value={value.maxUses == null ? "unlimited" : "fixed"} onChange={(event) => update("maxUses", event.target.value === "unlimited" ? null : 1)}><option value="fixed">Limite fixo de compras</option><option value="unlimited">Ilimitado</option></select>{value.maxUses != null && <input aria-label="Limite total de usos do cupom" required type="number" min="1" max="100000" step="1" value={value.maxUses} onChange={(event) => update("maxUses", event.target.value)} />}</label>
+    <label className="coupon-check"><input type="checkbox" checked={value.oncePerAccount} onChange={(event) => update("oncePerAccount", event.target.checked)} />Uma utilização por conta</label>
+    <label className="coupon-check"><input type="checkbox" checked={value.waiveServiceFee} onChange={(event) => update("waiveServiceFee", event.target.checked)} />Isentar taxa nas unidades com desconto</label>
+  </div>;
+}
+
+function CouponRulesEditor({ coupon, onSave }) {
+  const [value, setValue] = useState({ ...defaultCouponRules, ...coupon });
+  const [saving, setSaving] = useState(false);
+  return <details className="coupon-rules-editor"><summary>Configurações de {coupon.code}</summary><form onSubmit={async (event) => { event.preventDefault(); setSaving(true); try { await onSave(coupon.id, value); } finally { setSaving(false); } }}><fieldset disabled={saving}><CouponRuleFields value={value} onChange={setValue} /><button className="primary">{saving ? "Salvando..." : "Salvar configurações"}</button></fieldset></form></details>;
+}
+
 function AdminPanel({ refresh }) {
   const [summary, setSummary] = useState(null);
   const [settings, setSettings] = useState(null);
@@ -1625,8 +1684,7 @@ function AdminPanel({ refresh }) {
   const [shirtOrdersData, setShirtOrdersData] = useState({ orders: [], summary: {} });
   const [coupons, setCoupons] = useState([]);
   const [newCouponCode, setNewCouponCode] = useState("");
-  const [newCouponMaxUses, setNewCouponMaxUses] = useState("1");
-  const [couponLimits, setCouponLimits] = useState({});
+  const [newCouponRules, setNewCouponRules] = useState(defaultCouponRules);
   const [couponCodes, setCouponCodes] = useState({});
   const [notice, setNotice] = useState(null);
   const [activeAdminTab, setActiveAdminTab] = useState("dashboard");
@@ -1653,16 +1711,15 @@ function AdminPanel({ refresh }) {
     setUsers(userData.users);
     setShirtOrdersData(shirtData);
     setCoupons(couponData.coupons);
-    setCouponLimits(Object.fromEntries(couponData.coupons.map((coupon) => [coupon.id, String(coupon.maxUses || 1)])));
     setCouponCodes(Object.fromEntries(couponData.coupons.map((coupon) => [coupon.id, coupon.code])));
   }
 
   async function createCoupon(event) {
     event.preventDefault();
     try {
-      await api("/api/admin/coupons", { method: "POST", body: JSON.stringify({ code: newCouponCode, maxUses: newCouponMaxUses }) });
+      await api("/api/admin/coupons", { method: "POST", body: JSON.stringify({ code: newCouponCode, ...newCouponRules }) });
       setNewCouponCode("");
-      setNewCouponMaxUses("1");
+      setNewCouponRules(defaultCouponRules);
       await load();
       setNotice({ type: "success", text: "Cupom cadastrado com sucesso." });
     } catch (error) { setNotice({ type: "error", text: error.message }); }
@@ -1675,11 +1732,11 @@ function AdminPanel({ refresh }) {
     } catch (error) { setNotice({ type: "error", text: error.message }); }
   }
 
-  async function updateCouponLimit(coupon) {
+  async function saveCouponRules(couponId, rules) {
     try {
-      await api(`/api/admin/coupons/${coupon.id}/limit`, { method: "PUT", body: JSON.stringify({ maxUses: couponLimits[coupon.id] }) });
+      await api(`/api/admin/coupons/${couponId}/rules`, { method: "PUT", body: JSON.stringify(rules) });
       await load();
-      setNotice({ type: "success", text: `Limite do cupom ${coupon.code} atualizado.` });
+      setNotice({ type: "success", text: "Configurações do cupom salvas." });
     } catch (error) { setNotice({ type: "error", text: error.message }); }
   }
 
@@ -1863,7 +1920,7 @@ function AdminPanel({ refresh }) {
             </label>
             <label>
               Valor do ingresso social
-              <input type="number" min="0" step="0.01" value={settings.socialTicketPrice ?? settings.ticketPrice ?? ""} onChange={(e) => setSettings({ ...settings, socialTicketPrice: e.target.value })} />
+              <input type="number" min="0" step="0.01" disabled={settings.currentSaleLot === "diaD"} value={settings.currentSaleLot === "diaD" ? settings.ticketPrice : settings.socialTicketPrice ?? settings.ticketPrice ?? ""} onChange={(e) => setSettings({ ...settings, socialTicketPrice: e.target.value })} />
             </label>
             <label>
               Valor da camisa
@@ -1887,6 +1944,11 @@ function AdminPanel({ refresh }) {
                 <input type="radio" name="currentSaleLot" value="lote4" checked={settings.currentSaleLot === "lote4"} onChange={(e) => updateSaleLot(e.target.value)} />
                 3° Lote
               </label>
+              <label>
+                <input type="radio" name="currentSaleLot" value="diaD" checked={settings.currentSaleLot === "diaD"} onChange={(e) => updateSaleLot(e.target.value)} />
+                Dia D
+              </label>
+              {settings.currentSaleLot === "diaD" && <small>Inteira, meia e social usam o preço definido em Valor.</small>}
             </fieldset>
             <label className="toggle">
               <input type="checkbox" checked={settings.registrationOpen} onChange={(e) => setSettings({ ...settings, registrationOpen: e.target.checked })} />
@@ -2058,16 +2120,19 @@ function AdminPanel({ refresh }) {
         <section className="panel">
           <h2>Cupons de Desconto</h2>
           <Notice notice={notice} />
-          <form className="coupon-admin-form" onSubmit={createCoupon}>
+          <p>Uma compra aceita apenas um cupom. Usos pendentes reservam a disponibilidade; o limite de unidades vale por compra.</p>
+          <form className="coupon-create-form" onSubmit={createCoupon}>
+            <button type="button" className="secondary" onClick={() => { setNewCouponCode(newCouponCode || "REDEDAMAS"); setNewCouponRules(singleTicket30Rules); }}>Preencher: 1 ingresso inteiro por R$ 30,00 por conta</button>
             <label>Código do cupom<input value={newCouponCode} onChange={(event) => setNewCouponCode(event.target.value.toUpperCase())} placeholder="EX.: DESCONTO10" /></label>
-            <label>Quantidade máxima de usos<input type="number" min="1" max="100000" step="1" value={newCouponMaxUses} onChange={(event) => setNewCouponMaxUses(event.target.value)} /></label>
+            <CouponRuleFields value={newCouponRules} onChange={setNewCouponRules} />
             <button className="primary">Cadastrar cupom</button>
           </form>
           <div className="coupon-admin-list">{coupons.map((coupon) => <article className="admin-list-card coupon-card" key={coupon.id}>
             <div className="coupon-code-editor"><div><input value={couponCodes[coupon.id] || ""} onChange={(event) => setCouponCodes({ ...couponCodes, [coupon.id]: event.target.value.toUpperCase() })} aria-label={`Nome do cupom ${coupon.code}`} /><button type="button" className="mini" onClick={() => updateCouponCode(coupon)}>Salvar nome</button></div><span className={`pill ${coupon.active ? "confirmed" : "rejected"}`}>{coupon.active ? "Ativo" : "Inativo"}</span></div>
             <div><strong>{coupon.usageCount ?? coupon.usages.length} de {coupon.maxUses || "ilimitados"} usos</strong>{coupon.limitReached && <small>Limite de utilizações atingido</small>}{coupon.usages.map((usage) => <small key={usage.orderId}>{usage.buyerName} • {usage.buyerEmail} • {usage.paymentMethod === "credit_card" ? "Cartão" : "Pix"} • {formatCurrency(usage.discount)}</small>)}</div>
-            <div className="coupon-limit-editor"><input type="number" min="1" max="100000" value={couponLimits[coupon.id] || "1"} onChange={(event) => setCouponLimits({ ...couponLimits, [coupon.id]: event.target.value })} aria-label={`Limite de usos do cupom ${coupon.code}`} /><button type="button" className="mini" onClick={() => updateCouponLimit(coupon)}>Salvar limite</button></div>
+            <div><strong>{coupon.productType === "ticket" ? "Ingressos" : "Camisas"} • {couponBenefit(coupon)}</strong><small>{coupon.oncePerAccount ? "Uso único por conta" : "Permite repetir por conta"}</small><small>{coupon.maxUnits == null ? "Todas as unidades elegíveis" : `Até ${coupon.maxUnits} unidade(s) por compra`}</small></div>
             <button type="button" className="secondary" onClick={() => toggleCoupon(coupon)}>{coupon.active ? "Desativar" : "Ativar"}</button>
+            <CouponRulesEditor key={`${coupon.id}-${coupon.updatedAt}`} coupon={coupon} onSave={saveCouponRules} />
           </article>)}</div>
         </section>
       )}
