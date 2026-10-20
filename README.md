@@ -244,10 +244,14 @@ Tabelas usadas:
 
 ## Camisas e Cupons
 
-- Cupom válido: desconto de **10%** sobre o subtotal, sem taxa de serviço, em Pix ou cartão.
+- Cada cupom pode ser configurado para **ingressos ou camisas**, todos os itens do produto ou um tipo/tamanho específico, com percentual de desconto e quantidade máxima de unidades por compra.
+- O painel permite **uma utilização por conta**, disponibilidade fixa ou ilimitada e isenção opcional da taxa nas unidades elegíveis. Cupons existentes preservam a regra de 10% para camisas, sem taxa.
+- Cada compra aceita **apenas um cupom**. Um pedido com vários ingressos consome um uso. Pagamentos confirmados e pendentes reservam o uso; pagamentos rejeitados ou cancelados deixam de contar.
+- Cupons também aceitam **preço fixo por unidade**, sem aumentar preços menores. O atalho de cadastro para REDEDAMAS preenche: ingresso inteiro a R$ 30,00, uma unidade por compra, uso único por conta, sem taxa nessa unidade e disponibilidade total ilimitada. É necessário cadastrar ou salvar o cupom no painel; as demais unidades mantêm preço e taxa normais.
 - Sem cupom: taxa de **1% no Pix** ou **8% no cartão**.
-- Cartão: até **2 parcelas** para camisas; ingressos permitem até **3 parcelas**.
+- Cartão: até **12 parcelas com juros** para camisas, conforme as opções retornadas pelo Mercado Pago e a configuração de parcelamento da conta; ingressos permitem até **3 parcelas**.
 - A utilização de cupons considera pedidos confirmados e pedidos aguardando pagamento.
+- Na Hostinger/MySQL, as compras com o mesmo cupom são serializadas por trava no banco; no armazenamento local, a trava vale para um processo Node. Neon/Supabase com múltiplas instâncias precisam de trava distribuída antes de escalar esse fluxo.
 - Preço e fechamento das vendas são configurados na área administrativa.
 - A interface informa o prazo de pedidos até **15 de outubro**. Esse aviso é um texto da tela, não um agendamento automático de fechamento.
 
