@@ -224,7 +224,7 @@ const ticketTypeDiscounts = {
   meia: 0.5
 };
 const ticketTypes = new Set(["inteiro", "meia", "social"]);
-const saleLots = new Set(["relampago", "lote2", "lote3", "lote4"]);
+const saleLots = new Set(["relampago", "lote2", "lote3", "lote4", "diaD"]);
 const shirtOptions = {
   unisex_PP: { model: "Unissex", size: "PP" },
   unisex_P: { model: "Unissex", size: "P" },
@@ -766,7 +766,8 @@ const saleLotLabels = {
   relampago: "Lote Relâmpago",
   lote2: "1º Lote",
   lote3: "2º Lote",
-  lote4: "3º Lote"
+  lote4: "3º Lote",
+  diaD: "Dia D"
 };
 
 const saleLotTicketPrices = {
@@ -825,7 +826,7 @@ function createSalesReportWorkbook(tickets) {
     const categoryTotal = (type) => Number(categoryTickets[type].reduce((sum, ticket) => sum + Number(ticket.price || 0), 0).toFixed(2));
     const unitPrice = (type) => categoryTickets[type].length
       ? Number(categoryTickets[type][0].price || 0)
-      : saleLotTicketPrices[lot][type];
+      : saleLotTicketPrices[lot]?.[type] ?? null;
     worksheet.addRow([
       saleLotLabels[lot],
       categoryTickets.inteiro.length,
@@ -1528,8 +1529,8 @@ async function api(req, res, pathname) {
     const unitPrice = Number(settings.ticketPrice || 0);
     const ticketTypePrices = {
       inteiro: unitPrice,
-      meia: Number((unitPrice * ticketTypeDiscounts.meia).toFixed(2)),
-      social: numberOrDefault(settings.socialTicketPrice, unitPrice)
+      meia: settings.currentSaleLot === "diaD" ? unitPrice : Number((unitPrice * ticketTypeDiscounts.meia).toFixed(2)),
+      social: settings.currentSaleLot === "diaD" ? unitPrice : numberOrDefault(settings.socialTicketPrice, unitPrice)
     };
     const requestedItems = body.items && typeof body.items === "object"
       ? body.items

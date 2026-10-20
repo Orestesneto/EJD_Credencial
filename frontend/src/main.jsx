@@ -501,8 +501,8 @@ function BuyTicket({ refresh }) {
   ];
   const ticketTypePrices = {
     inteiro: unitPrice,
-    meia: unitPrice * 0.5,
-    social: socialUnitPrice
+    meia: config?.settings?.currentSaleLot === "diaD" ? unitPrice : unitPrice * 0.5,
+    social: config?.settings?.currentSaleLot === "diaD" ? unitPrice : socialUnitPrice
   };
   const quantity = Object.values(ticketQuantities).reduce((sum, value) => sum + value, 0);
   const subtotal = ticketTypeOptions.reduce((sum, option) => sum + ticketTypePrices[option.value] * ticketQuantities[option.value], 0);
@@ -683,7 +683,7 @@ function BuyTicket({ refresh }) {
         <p>** Cartão de crédito: taxa de serviço de 8%.</p>
         <p>*** {meiaTicketNotice}</p>
       </div>
-      {ticketLotsModal && <TicketLotsModal currentSaleLot={config?.settings?.currentSaleLot} onClose={() => setTicketLotsModal(false)} />}
+      {ticketLotsModal && config?.settings && config.settings.currentSaleLot !== "diaD" && <TicketLotsModal currentSaleLot={config.settings.currentSaleLot} ticketPrice={unitPrice} onClose={() => setTicketLotsModal(false)} />}
       {socialTicketModal && <SocialTicketModal onConfirm={confirmSocialTicket} onClose={() => setSocialTicketModal(false)} />}
       {pixModal && <PixModal pix={pixModal} onClose={() => setPixModal(null)} />}
       {cardModal && <CardPaymentModal publicKey={config?.mercadoPagoPublicKey} total={total} loading={loading} error={cardError} onSubmit={checkout} onClose={() => !loading && setCardModal(false)} />}
@@ -893,7 +893,7 @@ function BuyShirt({ refresh }) {
   );
 }
 
-function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
+function TicketLotsModal({ currentSaleLot = "relampago", ticketPrice = 0, onClose }) {
   const lots = [
     { id: "relampago",
       name: "Lote Relâmpago",
@@ -931,6 +931,13 @@ function TicketLotsModal({ currentSaleLot = "relampago", onClose }) {
       ]
     }
   ];
+  if (currentSaleLot === "diaD") {
+    lots.splice(0, lots.length, {
+      id: "diaD",
+      name: "Dia D",
+      prices: ["Inteira", "Meia", "Social"].map((label) => [label, Number(ticketPrice).toFixed(2).replace(".", ",")])
+    });
+  }
   const currentLotIndex = Math.max(lots.findIndex((lot) => lot.id === currentSaleLot), 0);
   const visibleLots = lots.slice(0, currentLotIndex + 1);
 
