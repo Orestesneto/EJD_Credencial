@@ -1061,7 +1061,7 @@ function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose,
           await submitRef.current({
             token: formData.token,
             deviceId: String(window.MP_DEVICE_SESSION_ID || "").trim(),
-            cardholderName: formData.cardholderName,
+            cardholderName: document.getElementById("card-payment__cardholderName")?.value?.trim() || "",
             issuerId: formData.issuerId,
             paymentMethodId: formData.paymentMethodId,
             installments: Number(formData.installments),
@@ -1147,7 +1147,7 @@ function CardPaymentModal({ publicKey, total, loading, error, onSubmit, onClose,
           <label>
             Parcelas
             <select id="card-payment__installments" />
-            {maxInstallments === 12 && <small>Em até 2x sem juros</small>}
+            {maxInstallments === 12 && <small>Em até 12x com juros no cartão de crédito pelo Mercado Pago. Consulte as parcelas e o valor total nas opções acima.</small>}
           </label>
           <label className="card-field-wide">
             E-mail

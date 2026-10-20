@@ -1333,8 +1333,11 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
   const token = String(cardPayment?.token || "").trim();
   const paymentMethodId = String(cardPayment?.paymentMethodId || "").trim();
   const issuerId = String(cardPayment?.issuerId || "").trim();
-  const requestedInstallments = Math.max(Number.parseInt(cardPayment?.installments, 10) || 1, 1);
-  const maxInstallments = purchaseKind === "shirt" ? 2 : 3;
+  const requestedInstallments = Number(cardPayment?.installments);
+  if (!Number.isInteger(requestedInstallments) || requestedInstallments < 1) {
+    throw new Error("Selecione uma opção de parcelamento válida oferecida pelo Mercado Pago.");
+  }
+  const maxInstallments = purchaseKind === "shirt" ? 12 : 3;
   if (requestedInstallments > maxInstallments) {
     throw new Error(`Selecione no máximo ${maxInstallments}x para este pagamento.`);
   }
@@ -1354,7 +1357,7 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
   const phoneDigits = cleanDigits(user.whatsapp);
   const areaCode = phoneDigits.length >= 10 ? phoneDigits.slice(0, 2) : "";
   const phoneNumber = phoneDigits.length >= 10 ? phoneDigits.slice(2) : phoneDigits;
-  const additionalItems = (Array.isArray(ticketItems) ? ticketItems : []).map((item) => ({
+  let additionalItems = (Array.isArray(ticketItems) ? ticketItems : []).map((item) => ({
     id: purchaseKind === "shirt" ? `camisa-${item.sku}` : `ingresso-${item.ticketType}`,
     title: purchaseKind === "shirt" ? `Camisa ${item.model} ${item.size} - Encontrão 25 Anos` : `Ingresso ${item.ticketType} - Encontrão 25 Anos`,
     description: purchaseKind === "shirt" ? "Camisa oficial do evento" : "Ingresso para evento presencial",
@@ -1362,6 +1365,23 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
     quantity: Number(item.quantity),
     unit_price: Number(item.unitPrice)
   }));
+
+  if (purchaseKind === "shirt" && additionalItems.length) {
+    // Todas as camisas têm o mesmo preço. Distribui o total com cupom em
+    // centavos para que os itens enviados correspondam ao valor cobrado.
+    const quantity = additionalItems.reduce((sum, item) => sum + item.quantity, 0);
+    const totalCents = Math.round(Number(total) * 100);
+    const unitCents = Math.floor(totalCents / quantity);
+    let remainder = totalCents - unitCents * quantity;
+    additionalItems = additionalItems.flatMap((item) => {
+      const extraCentQuantity = Math.min(remainder, item.quantity);
+      remainder -= extraCentQuantity;
+      return [
+        { ...item, quantity: extraCentQuantity, unit_price: (unitCents + 1) / 100 },
+        { ...item, quantity: item.quantity - extraCentQuantity, unit_price: unitCents / 100 }
+      ].filter((line) => line.quantity > 0);
+    });
+  }
 
   return mercadoPagoRequest("https://api.mercadopago.com/v1/payments", {
     method: "POST",
@@ -1372,7 +1392,7 @@ async function createMercadoPagoCardPayment(user, orderId, total, cardPayment, t
       ...(deviceId ? { "X-meli-session-id": deviceId } : {})
     },
     body: JSON.stringify({
-      transaction_amount: Number(total),
+      transaction_amount: Number(Number(total).toFixed(2)),
       token,
       description: purchaseKind === "shirt" ? "Camisa - Encontrão 25 Anos" : "Ingresso - Encontrão 25 Anos",
       installments,
