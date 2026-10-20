@@ -9,6 +9,9 @@ const server = require("../server");
 const {
   applyMercadoPagoPayment,
   createMercadoPagoCardPayment,
+  summarizeShirtOrders,
+  trySendPurchasedShirtEmail,
+  sendMercadoPagoShirtEmail,
   createSalesReportWorkbook,
   createUsersWorkbook,
   db,
@@ -79,8 +82,8 @@ test("relatório de vendas separa categorias por lote e soma o total arrecadado"
   assert.deepEqual(worksheet.getRow(5).values.slice(1, 6), ["Lote Relâmpago", 1, 2, 1, 4]);
   assert.deepEqual(worksheet.getRow(5).values.slice(9, 13), [60, 60, 40, 160]);
   assert.deepEqual(worksheet.getRow(6).values.slice(1, 6), ["1º Lote", 0, 0, 1, 1]);
-  assert.equal(worksheet.getRow(9).getCell(12).value, 210);
-  assert.equal(worksheet.getRow(10).getCell(2).value, 1);
+  assert.equal(worksheet.getRow(10).getCell(12).value, 210);
+  assert.equal(worksheet.getRow(11).getCell(2).value, 1);
 });
 
 function memoryStorage(rows) {
@@ -356,13 +359,13 @@ test("API temporariamente indisponível faz retry e JSON inválido gera erro", a
   );
 });
 
-test("duplo checkout usa uma cobrança e retry recupera o mesmo Pix", async (t) => {
+for (const currentSaleLot of ["lote2", "diaD"]) test(`checkout ${currentSaleLot} calcula categorias e reutiliza o Pix`, async (t) => {
   const originalFetch = global.fetch;
   const originalDb = { all: db.all, save: db.save, removeWhere: db.removeWhere };
   const sessionToken = "checkout-session-token";
   const tables = {
     users: [{ id: "checkout-user", name: "Cliente Pix", email: "pix@example.com", whatsapp: "83999999999", role: "usuarios" }],
-    settings: [{ id: "event", registrationOpen: true, ticketSalesClosed: false, ticketPrice: 30, socialTicketPrice: 30 }],
+    settings: [{ id: "event", registrationOpen: true, ticketSalesClosed: false, ticketPrice: 30, socialTicketPrice: 20, currentSaleLot }],
     sessions: [{
       id: "checkout-session",
       userId: "checkout-user",
@@ -408,7 +411,7 @@ test("duplo checkout usa uma cobrança e retry recupera o mesmo Pix", async (t) 
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
   const checkoutBody = {
-    items: { inteiro: 1 },
+    items: { inteiro: 1, meia: 1, social: 1 },
     paymentMethod: "pix",
     checkoutRequestId: "checkout-request-12345678"
   };
@@ -423,7 +426,14 @@ test("duplo checkout usa uma cobrança e retry recupera o mesmo Pix", async (t) 
   ]);
   assert.deepEqual(simultaneous.map((result) => result.status).sort(), [201, 409]);
   assert.equal(createCalls, 1);
-  assert.equal(tables.tickets.length, 1);
+  assert.deepEqual(tables.tickets.map((ticket) => ticket.price), currentSaleLot === "diaD" ? [30, 30, 30] : [30, 15, 20]);
+  assert.ok(tables.tickets.every((ticket) => ticket.saleLot === currentSaleLot));
+  const checkout = simultaneous.find((result) => result.status === 201);
+  assert.equal(checkout.body.subtotal, currentSaleLot === "diaD" ? 90 : 65);
+  assert.equal(checkout.body.total, currentSaleLot === "diaD" ? 90.9 : 65.65);
+  const report = createSalesReportWorkbook(tables.tickets.map((ticket) => ({ ...ticket, status: "confirmed", mercadoPagoStatus: "approved" })));
+  if (currentSaleLot === "diaD") assert.deepEqual(report.getWorksheet("Ingressos por lote").getRow(9).values.slice(1, 13), ["Dia D", 1, 1, 1, 3, 30, 30, 30, 30, 30, 30, 90]);
+  assert.equal(tables.tickets.length, 3);
   assert.equal(tables.tickets[0].paymentId, "3000");
   assert.equal(tables.tickets[0].mercadoPagoStatus, "pending");
   assert.equal(tables.tickets[0].pixQrCode, "PIX-CODE");
@@ -435,7 +445,138 @@ test("duplo checkout usa uma cobrança e retry recupera o mesmo Pix", async (t) 
   assert.equal(retry.body.pix.id, "3000");
   assert.equal(retry.body.pix.qrCode, "PIX-CODE");
   assert.equal(createCalls, 1);
-  assert.equal(tables.tickets.length, 1);
+  assert.equal(tables.tickets.length, 3);
+});
+
+test("email de camisas exige aprovação e evita duplicação concorrente", async () => {
+  let saved;
+  const messages = [];
+  const order = { id: "shirt-email", orderId: "shr_email", paymentId: "999", productType: "shirt", buyerName: "Maria <Teste>", buyerEmail: "maria@example.com", paymentMethod: "pix", total: 45,
+    items: [{ model: "Babylook", size: "M", quantity: 1 }], status: "pending", mercadoPagoStatus: "pending" };
+  const storage = {
+    async all() { return [JSON.parse(JSON.stringify(saved || order))]; },
+    async save(table, record) { assert.equal(table, "shirt_orders"); saved = JSON.parse(JSON.stringify(record)); }
+  };
+  const transport = { async sendMail(message) { messages.push(message); return { messageId: "mail-1" }; } };
+  for (const status of ["pending", "rejected", "cancelled", "refunded", "charged_back"]) {
+    await trySendPurchasedShirtEmail({ ...order, mercadoPagoStatus: status }, { storage, transport });
+  }
+  assert.equal(messages.length, 0);
+  order.mercadoPagoStatus = "approved";
+  await Promise.all([
+    sendMercadoPagoShirtEmail("999", { storage, transport }),
+    sendMercadoPagoShirtEmail("999", { storage, transport })
+  ]);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].to, "maria@example.com");
+  assert.ok(messages[0].text.includes("1× Babylook — M"));
+  assert.ok(messages[0].text.includes("45,00"));
+  assert.ok(messages[0].text.includes("shr_email"));
+  assert.ok(messages[0].html.includes("Maria &lt;Teste&gt;"));
+  assert.ok(saved.emailSentAt);
+});
+
+test("falha no email da camisa permite nova tentativa sem desfazer aprovação", async () => {
+  const order = { id: "shirt-retry", paymentId: "998", buyerEmail: "cliente@example.com", mercadoPagoStatus: "approved", status: "confirmed", paymentMethod: "credit_card", total: 50, items: [] };
+  const storage = { async save() {} };
+  const failed = await trySendPurchasedShirtEmail(order, { storage, transport: { async sendMail() { throw new Error("SMTP indisponivel"); } } });
+  assert.equal(failed.sent, false);
+  assert.equal(order.emailSentAt, undefined);
+  assert.equal(order.emailLastError, "SMTP indisponivel");
+  assert.equal(order.status, "confirmed");
+  const result = await trySendPurchasedShirtEmail(order, { storage, transport: { async sendMail() { return { messageId: "retry-ok" }; } } });
+  assert.equal(result.sent, true);
+  assert.equal(order.emailLastError, null);
+  assert.ok(order.emailSentAt);
+});
+
+test("resumo das camisas desconta taxas por pagamento e arredonda em centavos", () => {
+  const { summary } = summarizeShirtOrders([
+    { status: "confirmed", paymentMethod: "pix", total: 50.5 },
+    { status: "pending", mercadoPagoStatus: "approved", paymentMethod: "credit_card", total: 45 },
+    { status: "confirmed", paymentProvider: "coupon", paymentMethod: "pix", total: 0 },
+    ...["pending", "rejected", "refunded", "cancelled", "charged_back"].map((mercadoPagoStatus) => ({
+      status: "pending", mercadoPagoStatus, paymentMethod: "credit_card", total: 100
+    }))
+  ]);
+  assert.equal(summary.receivedTotal, 95.5);
+  assert.equal(summary.paymentFeesTotal, 2.76);
+  assert.equal(summary.estimatedNetTotal, 92.74);
+  assert.equal(summarizeShirtOrders([]).summary.estimatedNetTotal, 0);
+});
+
+test("resumo de cupons das camisas contabiliza somente pedidos pagos", () => {
+  const orders = [
+    { status: "confirmed", couponCode: "TRILHOSAMBIENTES" },
+    { status: "pending", mercadoPagoStatus: "approved", couponCode: "TRILHOSAMBIENTES" },
+    { status: "confirmed", couponCode: null },
+    ...["pending", "rejected", "cancelled", "refunded", "charged_back"].flatMap((mercadoPagoStatus) => [
+      { status: "pending", mercadoPagoStatus, couponCode: "TRILHOSAMBIENTES" },
+      { status: "pending", mercadoPagoStatus, couponCode: null }
+    ])
+  ];
+  const { summary } = summarizeShirtOrders(orders);
+  assert.equal(summary.withCoupon, 2);
+  assert.equal(summary.withoutCoupon, 1);
+  assert.equal(summary.withCoupon + summary.withoutCoupon, summary.confirmedOrders);
+  assert.equal(summary.totalOrders, 13);
+  assert.equal(summarizeShirtOrders([]).summary.withCoupon, 0);
+  assert.equal(summarizeShirtOrders([]).summary.withoutCoupon, 0);
+});
+
+test("camisas aceitam 12 parcelas e preservam os limites dos ingressos", async (t) => {
+  const originalFetch = global.fetch;
+  const payments = [];
+  global.fetch = async (_url, options) => {
+    payments.push(JSON.parse(options.body));
+    return { ok: true, status: 201, async text() { return JSON.stringify({ id: 4001, status: "approved" }); } };
+  };
+  t.after(() => { global.fetch = originalFetch; });
+  const user = { name: "Cliente", email: "cliente@example.com" };
+  const card = {
+    token: "card-token-test", paymentMethodId: "master", installments: 12,
+    payer: { identification: { type: "CPF", number: "12345678900" } }
+  };
+  await createMercadoPagoCardPayment(user, "shirt-12", 60, card, [], "shirt");
+  assert.equal(payments[0].installments, 12);
+  assert.equal(payments[0].transaction_amount, 60);
+  await assert.rejects(createMercadoPagoCardPayment(user, "shirt-13", 60, { ...card, installments: 13 }, [], "shirt"), /12x/);
+  await assert.rejects(createMercadoPagoCardPayment(user, "ticket-4", 60, { ...card, installments: 4 }, [], "ticket"), /3x/);
+  await createMercadoPagoCardPayment(user, "ticket-3", 60, { ...card, installments: 3 }, [], "ticket");
+  assert.equal(payments[1].installments, 3);
+  assert.equal(payments.length, 2);
+});
+
+test("camisas com cupom enviam itens que somam o valor cobrado", async (t) => {
+  const originalFetch = global.fetch;
+  const payments = [];
+  global.fetch = async (_url, options) => {
+    payments.push(JSON.parse(options.body));
+    return { ok: true, status: 201, async text() { return JSON.stringify({ id: 4002, status: "rejected", status_detail: "cc_rejected_high_risk" }); } };
+  };
+  t.after(() => { global.fetch = originalFetch; });
+  const user = { name: "Cliente", email: "cliente@example.com" };
+  const card = {
+    token: "card-token-test", paymentMethodId: "master", installments: 12,
+    payer: { identification: { type: "CPF", number: "12345678900" } }
+  };
+  const result = await createMercadoPagoCardPayment(user, "shirt-coupon", 45, card,
+    [{ sku: "babylook_m", model: "Babylook", size: "M", quantity: 1, unitPrice: 50 }], "shirt");
+  assert.equal(payments[0].additional_info.items[0].unit_price, 45);
+  assert.equal(result.status, "rejected");
+  assert.equal(result.status_detail, "cc_rejected_high_risk");
+
+  await createMercadoPagoCardPayment(user, "shirt-rounding", 100, card, [
+    { sku: "babylook_m", model: "Babylook", size: "M", quantity: 2, unitPrice: 50 },
+    { sku: "unissex_g", model: "Unissex", size: "G", quantity: 1, unitPrice: 50 }
+  ], "shirt");
+  const items = payments[1].additional_info.items;
+  assert.equal(items.reduce((sum, item) => sum + item.quantity * Math.round(item.unit_price * 100), 0), 10000);
+  assert.equal(items.reduce((sum, item) => sum + item.quantity, 0), 3);
+  for (const installments of [0, -1, 1.5, "2abc", undefined]) {
+    await assert.rejects(createMercadoPagoCardPayment(user, "shirt-invalid", 45, { ...card, installments }, [], "shirt"), /parcelamento válida/);
+  }
+  assert.equal(payments.length, 2);
 });
 
 test("cartão envia Device ID, titular e ativa 3DS opcional", async (t) => {

@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node server.js",
     "build": "cd frontend && npm install && npm run build",
-    "test": "node --test tests/mercadopago-webhook.test.js",
+    "test": "node --test tests/mercadopago-webhook.test.js tests/coupon-rules.test.js tests/coupons-checkout.test.js tests/purchase-render.test.js",
     "start": "node server.js"
   },
   "dependencies": {
