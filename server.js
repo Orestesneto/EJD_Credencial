@@ -2277,6 +2277,7 @@ function serveStatic(req, res, pathname) {
       : "public, max-age=3600";
   res.writeHead(200, {
     "Content-Type": types[ext] || "application/octet-stream",
+    "X-EJD-Version": DEPLOY_VERSION,
     "Cache-Control": cacheControl,
     ...(ext === ".html" ? { Pragma: "no-cache", Expires: "0" } : {})
   });

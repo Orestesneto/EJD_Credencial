@@ -4,11 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>EJD - credenciamento</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik+Dirt&amp;family=Teko:wght@400;500;600;700&amp;display=swap" media="print" onload="this.media='all'" />
   </head>
   <body>
-    <div id="root"></div>
-    <script src="https://www.mercadopago.com/v2/security.js" view="checkout"></script>
-    <script src="https://sdk.mercadopago.com/js/v2"></script>
+    <div id="root"><div class="loading" role="status">Carregando...</div></div>
+    <noscript>Ative o JavaScript no navegador para acessar os ingressos.</noscript>
+    <script defer src="https://www.mercadopago.com/v2/security.js" view="checkout"></script>
+    <script defer src="https://sdk.mercadopago.com/js/v2"></script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

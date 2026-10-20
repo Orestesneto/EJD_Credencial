@@ -14,3 +14,4 @@ data/
 **/.idea/
 deploy-hostinger-*/
 hostinger-deploy-*.zip
+.tmp/browser-check/
