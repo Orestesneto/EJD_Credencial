@@ -1,74 +1,269 @@
-# EJD - Credenciamento
+# EJD — Credenciamento
 
-Sistema web de credenciamento para o evento **Encontrão 25 Anos**, em Campina Grande - PB.
-
-Aplicação preparada para publicação na Hostinger ou Vercel. Configure `APP_URL` com o domínio utilizado no ambiente.
+Sistema de inscrições, venda de ingressos e camisas e credenciamento do **Encontrão 25 Anos**, em Campina Grande–PB. Integra pagamentos pelo Mercado Pago, confirmação por e-mail e administração do evento.
 
 ## Funcionalidades
 
-- Cadastro e login de participantes por e-mail e data de nascimento.
-- Compra de ingressos com Pix ou cartão de crédito via Mercado Pago.
-- Geração de QR Code para ingressos pagos.
-- Painel de check-in com validação por QR Code, código ou telefone.
-- Painel administrativo com usuários, ingressos, presença e baixa manual.
-- Webhook do Mercado Pago para confirmação automática de pagamentos.
-- Exibição do status real do Mercado Pago, incluindo aprovado, pendente, rejeitado, cancelado, estornado, contestação e mediação.
-- Compra de camisas Unissex, Babylook e Infantil, com tabela de medidas e até 20 unidades por pedido.
-- Área **Minhas camisas**, com itens, status do pagamento e download do comprovante do pedido.
-- Gestão de cupons: criação, ativação, alteração do código, limite e consulta de utilizações.
-- Histórico de pagamentos ao clicar no nome do participante nos ingressos ou pedidos de camisas.
-- Resumo das quantidades de camisas pagas por modelo e tamanho.
-- Exportação Excel de usuários com e sem ingressos e relatório de vendas por categoria e lote.
-- Exportação Excel de camisas com **somente pedidos pagos**, em duas abas: pedidos e quantidades pagas.
-- Opção de desfazer a baixa manual de ingressos antes do check-in.
+### Participantes
 
-## Tecnologias
+- Cadastro e acesso com e-mail e data de nascimento.
+- Compra de ingressos inteiros, meia-entrada e sociais, conforme o lote ativo.
+- Pagamento por Pix ou cartão, com autenticação bancária 3DS quando solicitada.
+- Ingressos pagos com QR Code e envio por e-mail.
+- Compra de até 20 camisas por pedido: Unissex, Babylook e Infantil, com tabela de medidas.
+- Área **Minhas camisas**, com itens, status e comprovante do pedido.
+- Modal de resultado do cartão para camisas, com motivo de recusa quando informado pelo Mercado Pago.
+- Consulta automática do Pix das camisas enquanto o QR Code estiver aberto, com modal ao identificar aprovação ou pagamento não concluído.
+- E-mail de confirmação das camisas após aprovação: modelo, tamanho, quantidade, valor e identificação do pedido.
 
-- React com JavaScript
-- HTML e CSS sem framework
-- Backend Node.js com módulo `http` nativo
-- MySQL com `mysql2`, Neon/Postgres com `@neondatabase/serverless` ou Supabase
-- Fallback local em arquivos JSON quando nenhum banco estiver configurado
-- QR Code com `qrcode`
-- Leitura de QR Code no navegador com `html5-qrcode`
-- Deploy na Vercel via `vercel.json`
-- Publicação na Hostinger com backend Node.js e frontend pré-compilado
-- Planilhas Excel com `exceljs`
+### Administração e check-in
 
-## Rodar Localmente
+- Configuração de preços, lotes, abertura e fechamento das vendas.
+- Gestão de usuários e permissões; perfis `usuarios`, `checkin` e `admin`.
+- Validação de ingresso por QR Code, código ou telefone.
+- Baixa manual de ingressos e reversão antes do check-in.
+- Histórico de tentativas de pagamento ao clicar no nome do comprador.
+- Camisas agrupadas por usuário: prioriza um pedido confirmado; sem confirmação, mostra o pedido e o status mais recentes. Todas as tentativas permanecem no histórico.
+- Resumo de camisas pagas, líquido estimado e pedidos pagos com e sem cupom.
+- Exportação Excel de usuários, vendas de ingressos e camisas pagas.
 
-Requisito declarado no projeto: Node.js 18 ou superior.
+## Tecnologias e estrutura
+
+React 18 e Vite no frontend; Node.js com `http` nativo no backend. Persistência em MySQL, Neon/PostgreSQL, Supabase ou JSON local. Integrações com Mercado Pago e SMTP; planilhas com ExcelJS e QR Codes com `qrcode` e `html5-qrcode`.
+
+```text
+frontend/src/main.jsx      Interface e fluxos de compra e administração
+frontend/src/styles.css   Estilos da aplicação
+frontend/src/coupons.js    Cálculo de cupons na interface
+server.js                 API, pagamentos, persistência e e-mails
+coupon-rules.js           Regras e cálculos de cupons no backend
+assets/fonts/             Fontes usadas na geração de ingressos
+tests/                    Testes de regras, compras, pagamentos e relatórios
+versão para celular/      Aplicativo Android com Capacitor
+```
+
+## Executar localmente
+
+O projeto declara suporte a **Node.js 18 ou superior**, com npm.
 
 ```bash
-npm install
-cd frontend
-npm install
-cd ..
+npm ci
 npm run build
 npm start
 ```
 
-Acesse:
+O build da raiz instala as dependências do frontend e gera `frontend/dist/`. Acesse `http://localhost:3000`, salvo alteração de `PORT`.
 
-```text
-http://localhost:3000
-```
-
-Para desenvolvimento simples do backend, também é possível usar:
+Use [.env.example](.env.example) como referência para criar seu `.env`. O servidor **não carrega esse arquivo automaticamente**. Exporte as variáveis no terminal ou, em uma versão do Node compatível com `--env-file`, execute:
 
 ```bash
-npm run dev
+node --env-file=.env server.js
 ```
 
-Esse comando inicia o servidor Node, sem recompilar automaticamente o frontend. Após alterar a interface, execute `npm run build` novamente.
+`npm run dev` inicia o backend sem recompilação automática da interface. Após alterar o frontend, execute `npm run build` novamente.
 
-Use [.env.example](.env.example) como referência. O servidor **não carrega `.env` automaticamente**: configure as variáveis no terminal ou painel da hospedagem. Em versões do Node com suporte a `--env-file`, também é possível executar `node --env-file=.env server.js`.
+## Variáveis de ambiente
 
-## Versao Android
+Configure as variáveis no terminal ou no painel da hospedagem. Não publique credenciais no Git.
 
-A pasta `versão para celular/` contem um app Android criado com Capacitor. Ele abre o deploy de producao do sistema dentro de um aplicativo nativo.
+| Grupo | Variáveis | Uso |
+| --- | --- | --- |
+| Aplicação | `APP_URL`, `PORT` | URL pública e porta; padrão `3000` |
+| Administração | `ADMIN_EMAIL`, `ADMIN_BIRTH_DATE` | Administrador inicial |
+| Mercado Pago | `MERCADO_PAGO_ACCESS_TOKEN`, `MERCADO_PAGO_PUBLIC_KEY` | API de pagamentos e formulário de cartão |
+| Timeout | `MERCADO_PAGO_TIMEOUT_MS` | Padrão `12000` ms; limitado entre `5000` e `30000` ms |
+| SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | E-mails de ingressos e camisas |
+| MySQL | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD` | Persistência MySQL; porta padrão `3306` |
+| Neon/PostgreSQL | `NEON_DATABASE_URL` ou `DATABASE_URL` | Conexão PostgreSQL via Neon |
+| Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Persistência via Supabase |
+| Migração | `MIGRATE_NEON_TO_MYSQL` | Migração inicial opcional; padrão `0` |
 
-Para gerar um APK debug:
+Em produção, defina `APP_URL` com HTTPS, sem caminho e sem barra final, por exemplo `https://seu-dominio.com.br`.
+
+### Banco de dados
+
+A prioridade de seleção é:
+
+1. MySQL, com host, banco, usuário e senha preenchidos.
+2. Neon, com `NEON_DATABASE_URL` ou `DATABASE_URL` preenchida.
+3. Supabase, com URL e chave preenchidas.
+4. Arquivos JSON em `data/`, para uso local com persistência em disco.
+
+As tabelas são `users`, `tickets`, `shirt_orders`, `coupons`, `settings` e `sessions`. Os registros nos bancos são armazenados no campo JSON `data`, com identificador e data de atualização.
+
+O backend cria as tabelas no MySQL e no Neon. Consulte [neon-schema.sql](neon-schema.sql) e [supabase-schema.sql](supabase-schema.sql) para os esquemas SQL, incluindo a configuração manual do Supabase.
+
+Com Neon e MySQL configurados, `MIGRATE_NEON_TO_MYSQL=1` copia inicialmente **usuários, ingressos e configurações**, com registro em `migration_meta`. Essa rotina não transfere pedidos de camisas, cupons ou sessões.
+
+### E-mails
+
+Ingressos e camisas usam a mesma configuração SMTP. Os padrões são `SMTP_HOST=smtp.gmail.com` e `SMTP_PORT=465`; preencha `SMTP_USER` e `SMTP_PASS` para habilitar o envio.
+
+Ingressos são enviados após confirmação. Camisas recebem confirmação quando o status do pagamento é `approved`. O sistema registra `emailSentAt` e o identificador da mensagem para não repetir envios já registrados. Falhas são registradas e podem ser tentadas novamente em atualizações posteriores, inclusive na consulta a `/api/me`.
+
+O webhook processa a aprovação mesmo com o navegador fechado. O envio depende da disponibilidade e da configuração do SMTP.
+
+## Pagamentos
+
+Pix e cartão usam a API `/v1/payments` do Mercado Pago. O cartão é tokenizado pelo SDK no navegador; o fluxo envia dados do titular e Device ID e suporta desafio 3DS.
+
+| Produto | Parcelamento no cartão |
+| --- | --- |
+| Ingressos | Até 3 parcelas |
+| Camisas | Até 12 parcelas com juros, conforme as opções retornadas pelo Mercado Pago |
+
+O checkout bloqueia duplo clique e envia `checkoutRequestId` e chave de idempotência. Para ingressos, uma repetição pode recuperar a cobrança existente. Para camisas, um pedido já salvo com o mesmo identificador retorna conflito e orienta a conferir o pagamento.
+
+### Confirmação e status
+
+Configure as notificações de pagamento para:
+
+```text
+https://seu-dominio.com.br/webhook/mercadopago
+```
+
+O backend consulta o pagamento diretamente no Mercado Pago antes de atualizar ingressos e camisas. `/api/me` também reconcilia pagamentos pendentes.
+
+- `approved`: pagamento aprovado e pedido confirmado.
+- `pending`, `in_process` e `authorized`: aguardando conclusão.
+- Rejeições, cancelamentos, estornos e contestações não aprovam o pedido.
+- Ingressos confirmados manualmente pela administração podem ser usados no check-in.
+
+Gerar um QR Code Pix não significa que a compra foi paga. A confirmação automática no modal de camisas depende de manter o QR Code aberto; a atualização pelo webhook ocorre independentemente dessa tela.
+
+### Taxa de serviço e líquido das camisas
+
+São cálculos diferentes:
+
+| Cálculo | Pix | Cartão de crédito |
+| --- | --- | --- |
+| Taxa de serviço adicionada à compra, quando não isenta por cupom | 1% | 8% |
+| Taxa descontada no resumo líquido estimado das camisas | 1% | 5% |
+
+O **valor líquido estimado** considera apenas pedidos pagos e desconta a taxa de cada pagamento, arredondada em centavos. Por exemplo: R$ 45,00 no cartão resulta em R$ 42,75 líquidos estimados.
+
+Esse indicador usa os percentuais definidos no código: **não consulta o saldo disponível nem as taxas efetivamente cobradas na conta Mercado Pago**. Os contadores **Com desconto** e **Sem cupom** também consideram somente pedidos pagos.
+
+## Cupons e lotes
+
+Os cupons aceitam produto de destino (ingressos ou camisas), item específico ou todos os itens, desconto percentual ou preço fixo por unidade, limite de unidades por compra, disponibilidade fixa ou ilimitada, uso único por conta e isenção opcional da taxa nas unidades elegíveis.
+
+- Cada compra aceita um cupom. Um pedido com vários ingressos consome um uso.
+- Pagamentos confirmados e pendentes reservam a utilização; recusas e cancelamentos deixam de contar.
+- Cupons antigos preservam o desconto de 10% para camisas e a isenção da taxa.
+- Preço fixo nunca aumenta um preço normal menor. Unidades não elegíveis mantêm preço e taxa normais.
+- O atalho `REDEDAMAS` preenche ingresso inteiro a R$ 30,00, uma unidade por compra, uso único por conta, disponibilidade ilimitada e isenção da taxa nessa unidade. É necessário cadastrar ou salvar o cupom no painel.
+- No lote **Dia D**, inteira, meia e social usam o preço configurado para o lote.
+
+As compras com o mesmo cupom são serializadas por trava MySQL. No armazenamento local, a trava vale por processo Node; Neon/Supabase com múltiplas instâncias precisam de uma estratégia de trava distribuída.
+
+## Exportações
+
+As rotas de exportação exigem perfil administrativo.
+
+| Relatório | Conteúdo |
+| --- | --- |
+| Usuários | Abas com e sem ingressos |
+| Vendas de ingressos | Categorias, lotes, quantidades e valores |
+| Camisas pagas | Aba de pedidos e aba de quantidades por modelo e tamanho |
+
+O agrupamento visual das camisas por usuário não apaga pedidos. O Excel inclui cada pedido pago e pode ocupar várias linhas quando há modelos ou tamanhos diferentes.
+
+## Deploy na Hostinger
+
+### Código-fonte do repositório
+
+- Instalação: `npm ci`.
+- Build: `npm run build`.
+- Inicialização: `npm start`.
+- Arquivo de entrada: `server.js`.
+
+O build do código-fonte compila o frontend na hospedagem.
+
+### ZIP pré-compilado
+
+Os arquivos locais `hostinger-deploy-*.zip` incluem backend, frontend compilado, recursos, dependências declaradas e verificador de integridade. Não incluem `.env`, `data/` ou `node_modules/`.
+
+- Instalação: `npm install`, executado automaticamente pela Hostinger, ou `npm ci --omit=dev`.
+- Build: `npm run build`, que executa `verify-deploy.js`.
+- Inicialização: `npm start`; entrada `server.js`.
+
+O `package.json` do pacote difere do código-fonte: o frontend já está compilado. Nos pacotes a partir do v55, o verificador aceita a regravação do lockfile pelo npm, valida as dependências declaradas e confere os arquivos da aplicação.
+
+Preserve as variáveis de ambiente e os dados existentes ao atualizar. As pastas `deploy-hostinger-*` e os ZIPs são artefatos locais ignorados pelo Git.
+
+### Verificação após publicar
+
+Consulte `GET /health`. A resposta informa disponibilidade, versão e armazenamento ativo:
+
+```json
+{"ok":true,"version":"identificador-do-pacote","storage":"mysql"}
+```
+
+No deploy direto do código-fonte, sem `deploy-version.json`, a versão é `development`. Confira também login, compras, confirmação pelo webhook, e-mails, histórico, check-in e exportações.
+
+## Deploy na Vercel
+
+O arquivo [vercel.json](vercel.json) define build e roteamento. Configure as variáveis de ambiente no projeto, use banco externo e atualize `APP_URL` e o webhook para o domínio publicado.
+
+Com a CLI configurada para o projeto correto:
+
+```bash
+npx vercel --prod
+```
+
+O armazenamento JSON local não deve ser usado como persistência na Vercel. O diretório `.vercel/` é local e não é versionado.
+
+## Testes
+
+Instale as dependências da raiz e do frontend antes dos testes de renderização:
+
+```bash
+npm ci
+npm --prefix frontend ci
+npm test
+```
+
+A suíte padrão cobre cupons, checkout, pagamentos, webhook, relatórios, cálculo líquido, agrupamento de pedidos, modais e e-mails de confirmação. Os testes de envio usam transporte simulado.
+
+Para verificar adicionalmente a exportação de camisas:
+
+```bash
+node --test tests/shirt-export.test.js
+```
+
+Para validar a compilação da interface:
+
+```bash
+npm --prefix frontend run build
+```
+
+## API principal
+
+| Método e rota | Finalidade |
+| --- | --- |
+| `GET /health` | Versão e armazenamento ativo |
+| `GET /api/config` | Configurações públicas |
+| `POST /api/register`, `POST /api/login` | Cadastro e autenticação |
+| `GET /api/me` | Perfil, ingressos e camisas do usuário autenticado |
+| `POST /api/tickets/checkout` | Compra de ingressos |
+| `POST /api/shirts/checkout` | Compra de camisas |
+| `POST /api/coupons/validate` | Validação de cupom |
+| `POST /api/checkin/validate` | Validação e registro do check-in |
+| `GET /api/admin/summary` | Resumo administrativo |
+| `PUT /api/admin/settings` | Configurações do evento |
+| `GET /api/admin/users`, `GET /api/admin/users/export` | Usuários e Excel |
+| `GET /api/admin/sales-report/export` | Excel de vendas de ingressos |
+| `GET /api/admin/shirt-orders`, `GET /api/admin/shirt-orders/export` | Pedidos de camisas e Excel de pagos |
+| `GET /api/admin/coupons`, `POST /api/admin/coupons` | Consulta e cadastro de cupons |
+| `PUT /api/admin/coupons/:id/rules` | Edição das regras de cupom |
+| `PUT /api/admin/coupons/:id/status`, `/limit`, `/code` | Ativação, limite e código |
+| `POST /api/admin/tickets/:id/confirm`, `/undo-manual` | Baixa manual e reversão |
+| `POST /webhook/mercadopago` | Notificações de pagamento |
+
+## Aplicativo Android
+
+A pasta `versão para celular/` contém o aplicativo Capacitor que abre o sistema publicado. Para gerar um APK de depuração no Windows, com JDK e Android SDK configurados:
 
 ```bash
 cd "versão para celular"
@@ -77,223 +272,4 @@ npm run sync
 npm run build:android
 ```
 
-O APK fica em:
-
-```text
-versão para celular/android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-## Variáveis De Ambiente
-
-```bash
-SUPABASE_URL=
-SUPABASE_SERVICE_ROLE_KEY=
-DATABASE_URL=
-NEON_DATABASE_URL=
-MYSQL_HOST=
-MYSQL_PORT=3306
-MYSQL_DATABASE=
-MYSQL_USER=
-MYSQL_PASSWORD=
-MIGRATE_NEON_TO_MYSQL=0
-MERCADO_PAGO_ACCESS_TOKEN=
-MERCADO_PAGO_PUBLIC_KEY=
-MERCADO_PAGO_TIMEOUT_MS=12000
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
-SMTP_USER=
-SMTP_PASS=
-ADMIN_EMAIL=
-ADMIN_BIRTH_DATE=
-APP_URL=http://localhost:3000
-PORT=3000
-```
-
-Para enviar automaticamente os ingressos por e-mail após a confirmação do pagamento, configure `SMTP_USER` e `SMTP_PASS`. Para uma conta Gmail pessoal, use uma senha de app do Google em `SMTP_PASS`, nunca a senha normal da conta.
-
-Prioridade de banco:
-
-1. MySQL, se host, banco, usuário e senha estiverem configurados
-2. `NEON_DATABASE_URL` ou `DATABASE_URL`
-3. Supabase, se `SUPABASE_URL` e `SUPABASE_SERVICE_ROLE_KEY` estiverem configurados
-4. Arquivos locais em `data/`
-
-## Mercado Pago
-
-Configure `MERCADO_PAGO_ACCESS_TOKEN` para habilitar pagamentos e `MERCADO_PAGO_PUBLIC_KEY` para o formulário de cartão no navegador.
-
-As chamadas ao Mercado Pago usam timeout controlado de 12 segundos. Esse valor pode ser ajustado entre 5 e 30 segundos com `MERCADO_PAGO_TIMEOUT_MS`.
-
-O sistema usa:
-
-- Pix: criação direta em `/v1/payments`
-- Cartão de crédito: criação direta em `/v1/payments`, com formulário do SDK no navegador e autenticação 3DS quando solicitada pelo banco
-- Webhook: `/webhook/mercadopago`
-
-Em produção, configure a URL pública:
-
-```bash
-APP_URL=https://ejd-credenciamento.vercel.app
-```
-
-O webhook aceita notificações Webhooks e IPN (`data.id`, `payment_id`, `id`, query string ou URL em `resource`), consulta o pagamento diretamente na API do Mercado Pago e somente então atualiza os ingressos. A mesma notificação pode ser reenviada sem criar ingressos ou repetir um e-mail já registrado.
-
-O checkout envia um `checkoutRequestId` estável. Duplo clique é bloqueado e os pagamentos usam `X-Idempotency-Key`. No fluxo de ingressos, um retry recupera a cobrança existente, inclusive o QR Code Pix. Para camisas, um pedido já registrado com o mesmo identificador retorna conflito e orienta a consultar o pagamento.
-
-Configure o webhook no domínio utilizado na hospedagem:
-
-```text
-https://SEU-DOMINIO/webhook/mercadopago
-```
-
-Se o domínio de produção mudar, atualize `APP_URL` no ambiente. Não inclua caminho nem barra final; a aplicação acrescenta `/webhook/mercadopago` automaticamente.
-
-Regras principais:
-
-- `approved`: conta como pago e libera QR Code/check-in.
-- `manual`: conta como pago quando confirmado manualmente pelo admin.
-- `pending`, `in_process`, `authorized`: ficam aguardando.
-- `rejected`, `cancelled`, `refunded`, `charged_back`, `in_mediation`: não contam como pago.
-- O endpoint `/api/me` reconcilia pagamentos ainda pendentes com a API, servindo como recuperação caso uma entrega do webhook falhe.
-
-## Publicar Na Vercel
-
-O repositório inclui `vercel.json` com build e roteamento. Vincule o checkout ao projeto Vercel e configure as variáveis no painel; o diretório `.vercel` é local e não é versionado. Use um banco externo para persistência.
-
-Para publicar em produção:
-
-```bash
-npx vercel --prod --yes
-```
-
-Variáveis recomendadas na Vercel:
-
-```bash
-NEON_DATABASE_URL=
-MERCADO_PAGO_ACCESS_TOKEN=
-APP_URL=https://ejd-credenciamento.vercel.app
-```
-
-Após o deploy, valide:
-
-```bash
-curl https://ejd-credenciamento.vercel.app/health
-```
-
-Resposta esperada:
-
-```json
-{"ok":true,"storage":"neon"}
-```
-
-## Área Exclusiva
-
-As credenciais administrativas de produção não devem ser publicadas no repositório.
-
-Configure `ADMIN_EMAIL` e `ADMIN_BIRTH_DATE` somente nas variáveis de ambiente do deploy. O backend usa esses valores para criar ou migrar o usuário administrativo inicial, mas o acesso de produção deve ser tratado como credencial sensível e compartilhado apenas pelos responsáveis do evento.
-
-## Banco De Dados
-
-O backend cria as tabelas automaticamente no MySQL e no Neon/Postgres. No Supabase, execute o esquema SQL.
-
-Com MySQL e Neon configurados, `MIGRATE_NEON_TO_MYSQL=1` habilita a migração inicial de **usuários, ingressos e configurações**, registrada em `migration_meta`. Essa rotina não copia pedidos de camisas, cupons ou sessões. O valor padrão é `0`.
-
-Se preferir criar manualmente, execute:
-
-- `neon-schema.sql` no SQL Editor do Neon
-- `supabase-schema.sql` no SQL Editor do Supabase
-
-Tabelas usadas:
-
-- `users`
-- `tickets`
-- `shirt_orders`
-- `coupons`
-- `settings`
-- `sessions`
-
-## Rotas Úteis
-
-- `GET /health`: status da aplicação e storage ativo
-- `GET /api/config`: configurações públicas
-- `POST /api/register`: cadastro
-- `POST /api/login`: login
-- `GET /api/me`: perfil, ingressos e pedidos de camisas do usuário
-- `POST /api/tickets/checkout`: compra de ingressos
-- `POST /api/shirts/checkout`: compra de camisas
-- `POST /api/coupons/validate`: validação de cupom
-- `POST /api/checkin/validate`: validação de check-in
-- `GET /api/admin/summary`: resumo administrativo
-- `PUT /api/admin/settings`: configurações do evento
-- `GET /api/admin/users`: usuários
-- `GET /api/admin/users/export`: Excel de usuários
-- `GET /api/admin/sales-report/export`: Excel de vendas de ingressos
-- `GET /api/admin/shirt-orders`: pedidos e resumo de camisas
-- `GET /api/admin/shirt-orders/export`: Excel de camisas pagas
-- `GET /api/admin/coupons` e `POST /api/admin/coupons`: consulta e criação de cupons
-- `PUT /api/admin/coupons/:id/status`, `/limit` e `/code`: ativação, limite e código do cupom
-- `POST /api/admin/tickets/:id/confirm`: baixa manual
-- `POST /api/admin/tickets/:id/undo-manual`: desfazer baixa manual
-- `POST /webhook/mercadopago`: webhook de pagamentos
-
-## Observações
-
-- Ingressos pendentes expiram visualmente após 1 hora quando ainda estão aguardando pagamento.
-- Ingressos com estorno, contestação, rejeição ou cancelamento continuam visíveis no admin, mas não contam como pagos.
-- O check-in só é permitido para ingressos efetivamente pagos.
-
-## Camisas e Cupons
-
-- Cada cupom pode ser configurado para **ingressos ou camisas**, todos os itens do produto ou um tipo/tamanho específico, com percentual de desconto e quantidade máxima de unidades por compra.
-- O painel permite **uma utilização por conta**, disponibilidade fixa ou ilimitada e isenção opcional da taxa nas unidades elegíveis. Cupons existentes preservam a regra de 10% para camisas, sem taxa.
-- Cada compra aceita **apenas um cupom**. Um pedido com vários ingressos consome um uso. Pagamentos confirmados e pendentes reservam o uso; pagamentos rejeitados ou cancelados deixam de contar.
-- Cupons também aceitam **preço fixo por unidade**, sem aumentar preços menores. O atalho de cadastro para REDEDAMAS preenche: ingresso inteiro a R$ 30,00, uma unidade por compra, uso único por conta, sem taxa nessa unidade e disponibilidade total ilimitada. É necessário cadastrar ou salvar o cupom no painel; as demais unidades mantêm preço e taxa normais.
-- Sem cupom: taxa de **1% no Pix** ou **8% no cartão**.
-- Cartão: até **12 parcelas com juros** para camisas, conforme as opções retornadas pelo Mercado Pago e a configuração de parcelamento da conta; ingressos permitem até **3 parcelas**.
-- A utilização de cupons considera pedidos confirmados e pedidos aguardando pagamento.
-- Na Hostinger/MySQL, as compras com o mesmo cupom são serializadas por trava no banco; no armazenamento local, a trava vale para um processo Node. Neon/Supabase com múltiplas instâncias precisam de trava distribuída antes de escalar esse fluxo.
-- Preço e fechamento das vendas são configurados na área administrativa.
-- A interface informa o prazo de pedidos até **15 de outubro**. Esse aviso é um texto da tela, não um agendamento automático de fechamento.
-
-No painel **Pedidos de Camisas**, clique no nome para consultar o histórico de pagamentos daquele usuário. O botão **Baixar Excel**, à direita do título, exporta apenas pedidos pagos:
-
-| Aba | Conteúdo |
-| --- | --- |
-| Pedidos de camisas | Nome do usuário, modelo e tamanho, cupom, quantidade e status do pagamento |
-| Quantidades pagas | Quantidade por modelo e tamanho e total geral, usando o mesmo cálculo da tela |
-
-Pedidos com modelos ou tamanhos diferentes ocupam mais de uma linha na primeira aba. As rotas administrativas exigem perfil `admin`.
-
-## Testes
-
-Para os testes de pagamentos, webhook e relatórios de ingressos:
-
-```bash
-npm test
-```
-
-Para executar também os testes do Excel de camisas:
-
-```bash
-node --test tests/mercadopago-webhook.test.js tests/shirt-export.test.js
-```
-
-Os testes do Excel verificam a leitura do arquivo gerado, os cupons, a exclusão de pedidos não pagos e os totais por modelo e tamanho. Valide a compilação da interface com `npm run build`.
-
-## Publicar Na Hostinger
-
-### A partir do código-fonte
-
-Configure as variáveis no painel, instale as dependências com `npm ci`, use `npm run build` como comando de build e `npm start` como inicialização. O arquivo de entrada é `server.js`.
-
-### Pacote pré-compilado
-
-Os pacotes locais `hostinger-deploy-*.zip` incluem `frontend/dist/`, backend, recursos e dependências declaradas. Neles:
-
-- Instalação: `npm ci --omit=dev`.
-- Build: `npm run build`, que executa `verify-deploy.js` para conferir os arquivos já compilados.
-- Inicialização: `npm start` ou entrada `server.js`.
-
-O `package.json` desses pacotes difere do código-fonte: não é necessário recompilar o frontend na hospedagem. Preserve as variáveis e os dados existentes no deploy. Pastas `deploy-hostinger-*` e ZIPs são artefatos locais ignorados pelo Git.
-
-Após publicar, consulte `GET /health`; o campo `storage` informa o armazenamento ativo. Confira também login, webhook, pedidos de camisas e download do Excel na área administrativa.
+Saída: `versão para celular/android/app/build/outputs/apk/debug/app-debug.apk`.
