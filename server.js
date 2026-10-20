@@ -678,6 +678,14 @@ function addUsersWorksheet(workbook, name, users, includeTicketCount) {
 
 function summarizeShirtOrders(orders) {
     const confirmed = orders.filter((order) => order.status === "confirmed" || order.mercadoPagoStatus === "approved");
+    const paymentTotals = confirmed.reduce((totals, order) => {
+      const amountCents = Math.round(Number(order.total || 0) * 100);
+      const feePercent = order.paymentMethod === "credit_card" ? 5 : order.paymentMethod === "pix" ? 1 : 0;
+      const feeCents = Math.round(amountCents * feePercent / 100);
+      totals.grossCents += amountCents;
+      totals.feeCents += feeCents;
+      return totals;
+    }, { grossCents: 0, feeCents: 0 });
     const quantitiesByModelAndSize = [...confirmed.reduce((totals, order) => {
       for (const item of order.items || []) {
         const option = shirtOptions[item.sku] || {};
@@ -698,9 +706,11 @@ function summarizeShirtOrders(orders) {
         totalOrders: orders.length,
         confirmedOrders: confirmed.length,
         paidShirts: quantitiesByModelAndSize.reduce((total, item) => total + item.quantity, 0),
-        receivedTotal: Number(confirmed.reduce((total, order) => total + Number(order.total || 0), 0).toFixed(2)),
-        withCoupon: orders.filter((order) => Boolean(order.couponCode)).length,
-        withoutCoupon: orders.filter((order) => !order.couponCode).length,
+        receivedTotal: paymentTotals.grossCents / 100,
+        paymentFeesTotal: paymentTotals.feeCents / 100,
+        estimatedNetTotal: (paymentTotals.grossCents - paymentTotals.feeCents) / 100,
+        withCoupon: confirmed.filter((order) => Boolean(order.couponCode)).length,
+        withoutCoupon: confirmed.filter((order) => !order.couponCode).length,
         quantitiesByModelAndSize
       }
     };

@@ -1684,11 +1684,29 @@ function CouponRulesEditor({ coupon, onSave }) {
   return <details className="coupon-rules-editor"><summary>Configurações de {coupon.code}</summary><form onSubmit={async (event) => { event.preventDefault(); setSaving(true); try { await onSave(coupon.id, value); } finally { setSaving(false); } }}><fieldset disabled={saving}><CouponRuleFields value={value} onChange={setValue} /><button className="primary">{saving ? "Salvando..." : "Salvar configurações"}</button></fieldset></form></details>;
 }
 
+function groupShirtOrdersByUser(orders) {
+  const groups = new Map();
+  const activityAt = (order) => Date.parse(order.mercadoPagoStatusUpdatedAt || order.updatedAt || order.createdAt || "") || 0;
+  const isConfirmed = (order) => order.status === "confirmed" || order.mercadoPagoStatus === "approved";
+  for (const order of orders) {
+    const email = String(order.buyerEmail || "").trim().toLowerCase();
+    const key = order.userId ? `user:${order.userId}` : email ? `email:${email}` : `order:${order.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(order);
+  }
+  return [...groups.entries()].map(([groupKey, history]) => {
+    const paymentHistory = [...history].sort((a, b) => activityAt(b) - activityAt(a));
+    const selected = paymentHistory.find(isConfirmed) || paymentHistory[0];
+    return { ...selected, groupKey, paymentHistory, latestActivityAt: activityAt(paymentHistory[0]), isConfirmed: isConfirmed(selected) };
+  }).sort((a, b) => b.latestActivityAt - a.latestActivityAt);
+}
+
 function AdminPanel({ refresh }) {
   const [summary, setSummary] = useState(null);
   const [settings, setSettings] = useState(null);
   const [users, setUsers] = useState([]);
   const [shirtOrdersData, setShirtOrdersData] = useState({ orders: [], summary: {} });
+  const groupedShirtOrders = useMemo(() => groupShirtOrdersByUser(shirtOrdersData.orders), [shirtOrdersData.orders]);
   const [coupons, setCoupons] = useState([]);
   const [newCouponCode, setNewCouponCode] = useState("");
   const [newCouponRules, setNewCouponRules] = useState(defaultCouponRules);
@@ -2088,23 +2106,22 @@ function AdminPanel({ refresh }) {
             </button>
           </div>
           <div className="stats">
-            <Info label="Pedidos" value={shirtOrdersData.summary.totalOrders || 0} />
-            <Info label="Pedidos pagos" value={shirtOrdersData.summary.confirmedOrders || 0} />
             <Info label="Camisas pagas" value={shirtOrdersData.summary.paidShirts || 0} />
-            <Info label="Total arrecadado" value={formatCurrency(shirtOrdersData.summary.receivedTotal)} />
+            <Info label="Valor líquido estimado" value={formatCurrency(shirtOrdersData.summary.estimatedNetTotal)} />
             <Info label="Com desconto" value={shirtOrdersData.summary.withCoupon || 0} />
             <Info label="Sem cupom" value={shirtOrdersData.summary.withoutCoupon || 0} />
           </div>
           <div className="shirt-orders-list">
-            {shirtOrdersData.orders.map((order) => <article className="admin-list-card" key={order.id}>
+            <small>Taxas descontadas por pagamento: Pix 1% e cartão de crédito 5%. O valor não representa uma consulta ao saldo disponível do Mercado Pago.</small>
+            {groupedShirtOrders.map((order) => <article className="admin-list-card" key={order.groupKey}>
               <div><button type="button" className="participant-history-button" onClick={() => setPaymentHistoryPerson({
                 participantName: order.buyerName,
                 participantWhatsapp: order.buyerWhatsapp,
-                paymentHistory: shirtOrdersData.orders.filter((item) => order.userId ? item.userId === order.userId : item.id === order.id).map((item) => ({ ...item, productType: "shirt" }))
+                paymentHistory: order.paymentHistory.map((item) => ({ ...item, productType: "shirt" }))
               })}>{order.buyerName}</button><small>{order.buyerEmail} • {order.buyerWhatsapp}</small></div>
               <div className="order-items">{(order.items || []).map((item) => <span key={item.sku}>{item.quantity}× {item.model} — {item.size}</span>)}</div>
               <div><strong>{formatCurrency(order.total)}</strong><small>{order.paymentMethod === "credit_card" ? "Cartão de crédito" : "Pix"}</small></div>
-              <div><span className={`pill ${order.status === "confirmed" ? "confirmed" : "pending"}`}>{order.status === "confirmed" ? "Confirmado" : "Pendente"}</span><small>{order.couponCode ? `Cupom ${order.couponCode} • desconto ${formatCurrency(order.discount)}` : "Sem cupom"}</small></div>
+              <div><span className={`pill ${order.isConfirmed ? "confirmed" : "pending"}`}>{order.isConfirmed ? "Confirmado" : paymentStatusLabel(order.mercadoPagoStatus || order.status)}</span><small>{order.couponCode ? `Cupom ${order.couponCode} • desconto ${formatCurrency(order.discount)}` : "Sem cupom"}</small></div>
             </article>)}
             {!shirtOrdersData.orders.length && <p>Nenhum pedido de camisa encontrado.</p>}
           </div>
